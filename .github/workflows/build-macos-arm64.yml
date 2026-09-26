@@ -1,0 +1,51 @@
+name: Build ZinjaI (macOS ARM64)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14   # runner nativo Apple Silicon (arm64)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mostrar arquitectura del runner
+        run: |
+          uname -a
+          arch
+
+      - name: Instalar wxWidgets (Homebrew)
+        run: |
+          brew update
+          brew install wxwidgets
+          wx-config --version
+          wx-config --list
+
+      - name: Compilar ZinjaI (make mac)
+        id: build
+        continue-on-error: true
+        run: |
+          make mac 2>&1 | tee build.log
+
+      - name: Subir log de compilación (siempre, haya fallado o no)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+      - name: Subir binario si compiló
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zinjai-macos-arm64
+          path: |
+            zinjai
+            bin/
+
+      - name: Fallar el job si la compilación falló
+        if: steps.build.outcome == 'failure'
+        run: exit 1
