@@ -1,0 +1,22 @@
+GPP=g++
+
+all: ../bin ../bin/updatem.bin ../bin/runner.bin ../zinjai
+	$(MAKE) -f Makefile.lnx -C complement
+	$(MAKE) -f Makefile.lnx -C img_viewer
+
+clean:
+	rm -f ../bin/updatem.bin ../bin/runner.bin ../zinjai
+	$(MAKE) -f Makefile.lnx -C complement clean
+	$(MAKE) -f Makefile.lnx -C img_viewer clean
+
+../bin:
+	mkdir ../bin
+
+../bin/runner.bin: runner.cpp
+	${GPP} -O2 runner.cpp -o $@
+
+../bin/updatem.bin: updatem.cpp zockets.cpp zockets.h
+	${GPP} -O2 updatem.cpp zockets.cpp -o $@
+
+../zinjai: launcher.cpp
+	${GPP} launcher.cpp -O2 -ldl -o $@

@@ -1,0 +1,286 @@
+#include "mxBacktraceGrid.h"
+#include "DebugManager.h"
+#include "mxSource.h"
+#include "ids.h"
+#include "mxMainWindow.h"
+#include "mxInspectionGrid.h"
+#include "Language.h"
+#include "mxMessageDialog.h"
+#include "mxBacktraceHistory.h"
+#include "ProjectManager.h"
+#include "asserts.h"
+
+BEGIN_EVENT_TABLE(mxBacktraceGrid, wxGrid)
+	EVT_MENU(mxID_BACKTRACE_UPDATE,mxBacktraceGrid::OnUpdate)
+	EVT_MENU(mxID_BACKTRACE_HISTORY,mxBacktraceGrid::OnHistory)
+	EVT_MENU(mxID_BACKTRACE_PREVIOUS,mxBacktraceGrid::OnPrevious)
+	EVT_MENU(mxID_BACKTRACE_GOTO_POS,mxBacktraceGrid::OnGotoPos)
+	EVT_MENU(mxID_BACKTRACE_INSPECT_ARGS,mxBacktraceGrid::OnInspectArgs)
+	EVT_MENU(mxID_BACKTRACE_INSPECT_LOCALS,mxBacktraceGrid::OnInspectLocals)
+	EVT_MENU(mxID_BACKTRACE_EXPLORE_ARGS,mxBacktraceGrid::OnExploreArgs)
+	EVT_MENU(mxID_BACKTRACE_ADD_FUNCTION_TO_BLACKLIST,mxBacktraceGrid::OnAddFunctionToBlackList)
+	EVT_MENU(mxID_BACKTRACE_ADD_FILE_TO_BLACKLIST,mxBacktraceGrid::OnAddFileToBlackList)
+END_EVENT_TABLE()
+	
+
+mxBacktraceGrid::mxBacktraceGrid(wxWindow *parent):mxGrid(parent,BG_COLS_COUNT,wxID_ANY,wxSize(400,300)) {
+	m_prev_cant_levels = 0; m_current_selection = -1;
+	mxGrid::InitColumn(BG_COL_LEVEL,LANG(BACKTRACE_LEVEL,"Nivel"),10);
+	mxGrid::InitColumn(BG_COL_FUNCTION,LANG(BACKTRACE_FUNCTION,"Función"),19);
+	mxGrid::InitColumn(BG_COL_FILE,LANG(BACKTRACE_FILE,"Archivo"),21);
+	mxGrid::InitColumn(BG_COL_LINE,LANG(BACKTRACE_LINE,"Linea"),10);
+	mxGrid::InitColumn(BG_COL_ARGS,LANG(BACKTRACE_ARGS,"Argumentos"),36);
+	mxGrid::DoCreate();
+	InsertRows(0,BACKTRACE_SIZE); entries.Resize(BACKTRACE_SIZE);
+	if (config->Debug.use_colours_for_inspections) SetCellHighlightPenWidth(0);
+	else mxGrid::SetRowSelectionMode();
+	EnableEditing(false);
+	EnableDragRowSize(false);
+	SetColLabelSize(wxGRID_AUTOSIZE);
+}
+
+bool mxBacktraceGrid::OnCellDoubleClick(int row, int col) {
+	SelectFrame(row); return true;
+}
+
+void mxBacktraceGrid::SelectRow(int to_select) {
+	if (config->Debug.use_colours_for_inspections) {
+		if (to_select==m_current_selection) return;
+		if (m_current_selection!=-1) 
+			for(int i=0;i<BG_COLS_COUNT;i++) 
+				SetCellBackgroundColour(m_current_selection,i,BCLR_WHITE);
+		m_current_selection = to_select; 
+		wxColour clr = to_select ? BCLR_YELLOW : BCLR_GREEN;
+		for(int i=0;i<BG_COLS_COUNT;i++) 
+			SetCellBackgroundColour(m_current_selection,i,clr);
+		Refresh();
+	} else 
+		wxGrid::SelectRow(to_select);
+}
+
+void mxBacktraceGrid::SelectFrame(int r) {
+	if (debug->IsDebugging() && !debug->CanTalkToGDB()) return;
+	long line; entries[r].line.ToLong(&line);
+	wxString file = entries[r].fname;
+	if (file.Len()) {
+		if (!debug->MarkCurrentPoint(file,line,r?mxSTC_MARK_FUNCCALL:mxSTC_MARK_EXECPOINT)) {
+			mxMessageDialog(main_window,wxString()<<LANG(MAINW_FILE_NOT_FOUND,"No se encontro el archivo:")<<"\n"<<file)
+				.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+		}
+		if (debug->CanTalkToGDB()) debug->SelectFrame(-1,r);
+		debug->UpdateInspections();
+	}
+	SelectRow(r);
+}
+
+void mxBacktraceGrid::OnGotoPos(wxCommandEvent &event) {
+	SelectFrame(selected_row);
+}
+
+bool mxBacktraceGrid::OnKey(int row, int col, int key, int modifiers) {
+	if (key==WXK_RETURN || key==WXK_NUMPAD_ENTER) {
+		OnCellDoubleClick(row,col);
+		return true;
+	} else 
+		return false;
+}
+
+void mxBacktraceGrid::OnExploreArgs(wxCommandEvent &event) {
+#warning TODO: reestablecer funcionalidad
+//	int r = selected_row;
+//	long line;
+//	GetCellValue(r,BG_COL_LINE).ToLong(&line);
+//	wxString file = GetCellValue(r,BG_COL_FILE);
+//	if (file.Len()) {
+//		if (r) {
+//			debug->MarkCurrentPoint(file,line,mxSTC_MARK_FUNCCALL);
+//		} else {
+//			debug->MarkCurrentPoint(file,line,mxSTC_MARK_EXECPOINT);
+//		}
+//		debug->SelectFrame(-1,r);
+//	}
+//	wxArrayString vars;
+//	if (debug->GetArgs(vars,GetCellValue(selected_row,BG_COL_LEVEL))) {
+//		wxArrayString frames(vars.GetCount());
+//		for (unsigned int i=0;i<frames.GetCount();i++)
+//			frames[i]=debug->current_frame;
+//		new mxInspectionExplorer(GetCellValue(selected_row,BG_COL_FUNCTION),vars,frames);
+//	}
+}
+
+void mxBacktraceGrid::OnExploreLocals(wxCommandEvent &event) {
+#warning TODO: restablecer funcionalidad
+//	int r = selected_row;
+//	long line;
+//	GetCellValue(r,BG_COL_LINE).ToLong(&line);
+//	wxString file = GetCellValue(r,BG_COL_FILE);
+//	if (file.Len()) {
+//		if (r) {
+//			debug->MarkCurrentPoint(file,line,mxSTC_MARK_FUNCCALL);
+//		} else {
+//			debug->MarkCurrentPoint(file,line,mxSTC_MARK_EXECPOINT);
+//		}
+//		debug->SelectFrame(-1,r);
+//	}
+//	wxArrayString vars;
+//	if (debug->GetLocals(vars,GetCellValue(selected_row,BG_COL_LEVEL))) {
+//		wxArrayString frames(vars.GetCount());
+//		for (unsigned int i=0;i<frames.GetCount();i++)
+//			frames[i]=debug->current_frame;
+//		new mxInspectionExplorer(GetCellValue(selected_row,BG_COL_FUNCTION),vars,frames);
+//	}
+}
+
+void mxBacktraceGrid::OnInspectArgs(wxCommandEvent &event) {
+	int r = selected_row;
+	long line;
+	GetCellValue(r,BG_COL_LINE).ToLong(&line);
+	wxString file = GetCellValue(r,BG_COL_FILE);
+	if (file.Len()) {
+		if (r) {
+			debug->MarkCurrentPoint(file,line,mxSTC_MARK_FUNCCALL);
+		} else {
+			debug->MarkCurrentPoint(file,line,mxSTC_MARK_EXECPOINT);
+		}
+		debug->SelectFrame(-1,r);
+	}
+#warning TODO: reestablecer esto
+//	wxArrayString vars;
+//	if (debug->GetArgs(vars,GetCellValue(selected_row,BG_COL_LEVEL)))
+//		main_window->inspection_ctrl->AppendInspections(vars);
+}
+
+void mxBacktraceGrid::OnInspectLocals(wxCommandEvent &event) {
+	int r = selected_row;
+	long line;
+	GetCellValue(r,BG_COL_LINE).ToLong(&line);
+	wxString file = GetCellValue(r,BG_COL_FILE);
+	if (file.Len()) {
+		if (r) {
+			debug->MarkCurrentPoint(file,line,mxSTC_MARK_FUNCCALL);
+		} else {
+			debug->MarkCurrentPoint(file,line,mxSTC_MARK_EXECPOINT);
+		}
+		debug->SelectFrame(-1,r);
+	}
+#warning TODO: reestablecer esto
+//	wxArrayString vars;
+//	if (debug->GetLocals(vars,GetCellValue(selected_row,BG_COL_LEVEL)))
+//		main_window->inspection_ctrl->AppendInspections(vars);
+}
+
+
+void mxBacktraceGrid::OnCellPopupMenu(int row, int col) {
+	selected_row = row;
+	if (!GetCellValue(selected_row,BG_COL_LEVEL).Len()) {
+		wxMenu menu; 
+		menu.Append(mxID_BACKTRACE_UPDATE,LANG(BACKTRACE_UPDATE,"Actualizar"));
+		menu.Append(mxID_BACKTRACE_HISTORY,LANG(BACKTRACE_HISTORY,"Generar Historial..."));
+		menu.Append(mxID_BACKTRACE_PREVIOUS,LANG(BACKTRACE_PREVIOUS,"Ver trazado anterior"));
+		PopupMenu(&menu);
+		return;
+	}
+	wxMenu menu; 
+	if (GetCellValue(selected_row,BG_COL_LINE).Len()) {
+		menu.Append(mxID_BACKTRACE_GOTO_POS,wxString(LANG(BACKTRACE_GOTO_PRE,"Ir a "))+GetCellValue(selected_row,BG_COL_FILE)+LANG(BACKTRACE_GOTO_POST," : ")+GetCellValue(selected_row,BG_COL_LINE));
+		if (!debug->IsDebugging() || debug->CanTalkToGDB()) {
+			menu.Append(mxID_BACKTRACE_ADD_FILE_TO_BLACKLIST,LANG(BACKTRACE_BLACKLIST_THIS_FILE,"Evitar detenerse este fuente (para step in)"));
+			menu.Append(mxID_BACKTRACE_ADD_FUNCTION_TO_BLACKLIST,LANG(BACKTRACE_BLACKLIST_THIS_FUNCTION,"Evitar detenerse esta función (para step in)"));
+		}
+	}
+	this->SetGridCursor(selected_row,col);
+#warning TODO: restablecer los explorar
+	if (GetCellValue(selected_row,BG_COL_ARGS).Len()) {
+//		menu.Append(mxID_BACKTRACE_INSPECT_ARGS,LANG(BACKTRACE_INSPECT_ARGS,"Inspeccionar Argumentos"));
+//		menu.Append(mxID_BACKTRACE_EXPLORE_ARGS,LANG(BACKTRACE_EXPLORE_ARGS,"Explorar Argumentos"));
+	}
+//	menu.Append(mxID_BACKTRACE_INSPECT_LOCALS,LANG(BACKTRACE_INSPECT_LOCALS,"Inspeccionar Variables Locales"));
+//	menu.Append(mxID_BACKTRACE_EXPLORE_LOCALS,LANG(BACKTRACE_EXPLORE_LOCALS,"Explorar Variables Locales"));
+	menu.AppendSeparator();
+	menu.Append(mxID_BACKTRACE_UPDATE,LANG(BACKTRACE_UPDATE,"Actualizar"));
+	menu.Append(mxID_BACKTRACE_HISTORY,LANG(BACKTRACE_HISTORY,"Generar Historial..."));
+	menu.Append(mxID_BACKTRACE_PREVIOUS,LANG(BACKTRACE_PREVIOUS,"Ver trazado anterior"));
+	PopupMenu(&menu);
+}
+
+
+void mxBacktraceGrid::OnAddFunctionToBlackList(wxCommandEvent &event) {
+	AddToBlackList("function",GetCellValue(selected_row,BG_COL_FUNCTION));
+}
+
+void mxBacktraceGrid::OnAddFileToBlackList(wxCommandEvent &event) {
+	AddToBlackList("file",GetCellValue(selected_row,BG_COL_FILE));
+}
+
+void mxBacktraceGrid::AddToBlackList(const wxString &type, const wxString &what) {
+	if (what.Len()) {
+		config->Debug.use_blacklist=true;
+		config->Debug.blacklist.Add(type+" "+mxUT::Quotize(what));
+		debug->SetBlacklist(true);
+	}
+}
+
+void mxBacktraceGrid::OnColumnHideOrUnhide (int col, bool visible) {
+	if (col==BG_COL_ARGS) debug->backtrace_shows_args=visible;
+	if (visible) debug->UpdateBacktrace(false);
+}
+
+void mxBacktraceGrid::SetCellValue (int r, int c, const wxString & value) {
+	if (c==BG_COL_FILE) entries[r].fname=value;
+	else if (c==BG_COL_LINE) entries[r].line=value;
+	mxGrid::SetCellValue(r,c,value);
+}
+
+void mxBacktraceGrid::OnUpdate (wxCommandEvent & event) {
+	debug->UpdateBacktrace(false);
+}
+
+void mxBacktraceGrid::OnHistory (wxCommandEvent & event) {
+	new mxBacktraceHistory();
+}
+
+void mxBacktraceGrid::OnPrevious (wxCommandEvent & event) {
+	if (debug->prev_stack.is_ok()) debug->UpdateBacktrace(debug->prev_stack,false);
+}
+
+void mxBacktraceGrid::BeginUpdate ( ) {
+	EXPECT(m_prev_cant_levels==0);
+	m_prev_cant_levels = m_cant_levels; 
+	m_to_select = -1; m_cant_levels = 0;
+	BeginBatch();
+}
+
+void mxBacktraceGrid::EndUpdate (bool do_select) {
+	if (m_to_select>=0) {
+		debug->SelectFrame(-1,m_to_select);
+		wxString file = GetCellValue(m_to_select,BG_COL_FILE);
+		wxString sline = GetCellValue(m_to_select,BG_COL_LINE);
+		long line=0; if (sline.ToLong(&line))
+			debug->MarkCurrentPoint(file,line,
+									debug->CurrentBacktraceIsReal()?(m_to_select>0?mxSTC_MARK_FUNCCALL:mxSTC_MARK_EXECPOINT):mxSTC_MARK_HISTORY);
+	} else {
+		debug->MarkCurrentPoint();
+	}
+	for(int i=m_cant_levels;i<m_prev_cant_levels;i++)
+		for(int j=0;j<BG_COLS_COUNT;j++) 
+			SetCellValue(i,j,wxEmptyString);
+	m_prev_cant_levels = 0;
+	SelectRow(m_to_select);
+	EndBatch();
+}
+
+void mxBacktraceGrid::AddLevel (const wxString func, const wxString file, const wxString line) {
+	SetCellValue(m_cant_levels,BG_COL_LEVEL,wxString()<<m_cant_levels);
+	SetCellValue(m_cant_levels,BG_COL_FUNCTION,func);
+	SetCellValue(m_cant_levels,BG_COL_FILE,file);
+	SetCellValue(m_cant_levels,BG_COL_LINE,line);
+	if (m_to_select==-1 && !line.IsEmpty()) m_to_select = m_cant_levels;
+	if (config->Debug.use_colours_for_inspections) {
+		if (!project || project->FindFromFullPath(file))
+			for (int j=0;j<BG_COLS_COUNT;j++) SetCellColour(m_cant_levels,j,CLR_BLACK);
+		else
+			for (int j=0;j<BG_COLS_COUNT;j++) SetCellColour(m_cant_levels,j,CLR_GRAY);
+	}
+	m_cant_levels++;
+}
+

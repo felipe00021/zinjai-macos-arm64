@@ -1,0 +1,22 @@
+GPP=i686-apple-darwin8-g++
+
+all: ../bin ../bin/updatem.bin ../bin/runner.bin ../bin/mac-terminal-wrapper.bin
+	$(MAKE) -f Makefile.m32 -C complement
+	$(MAKE) -f Makefile.m32 -C img_viewer
+
+clean:
+	rm -f ../bin/updatem.bin ../bin/runner.bin ../bin/mac-terminal-wrapper.bin
+	$(MAKE) -f Makefile.m32 -C complement clean
+	$(MAKE) -f Makefile.m32 -C img_viewer clean
+
+../bin:
+	mkdir ../bin
+	
+../bin/runner.bin: runner.cpp
+	${GPP} -O2 runner.cpp -o $@
+
+../bin/updatem.bin: updatem.cpp zockets.cpp zockets.h
+	${GPP} -O2 updatem.cpp zockets.cpp -o $@
+
+../bin/mac-terminal-wrapper.bin: mac-terminal-wrapper.cpp
+	${GPP} -O2 mac-terminal-wrapper.cpp -o $@

@@ -1,0 +1,28 @@
+#!/bin/sh
+
+# Script for generating an index file for zinjai to display cpprefence's content
+
+# To update this reference, download the latest offline archive from http://en.cppreference.com/
+# in its html book version, uncompress it and move to zinjai/cpprefence (should contain two subdirs, 
+# "en" and "common") and then invoke this script 
+
+cd en || exit 1
+
+echo -n > zinjai_index
+
+echo Extracting titles...
+
+for a in $(find -name "*.html"); do
+	echo -e -n "\\r   analizing $a...              "
+	grep -H \<title "$a" | sed 's/<title>//' | sed 's/<\/title>//' | sed 's/ - cppreference.com//' | sed 's/cppreference.com//' >> zinjai_index
+done
+
+cd ..
+
+echo -e "\\rConverting images...                "
+# ...and convert all svg images to pngs, because wxhtml won't display svg, so ZinjaI will replace them with pngs
+for A in $(find -name "*.svg"); do 
+    echo -e -n "\\r   converting $A...               "
+    convert $A ${A%.svg}.png; 
+done
+echo -e "\\rDone!                                                        "

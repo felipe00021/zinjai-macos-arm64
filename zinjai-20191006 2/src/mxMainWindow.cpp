@@ -1,0 +1,4990 @@
+#include <wx/aui/aui.h> // si no hago este include antes del de imaglist no enlaza en windows por "undefined reference to wxGenericImageList::..." (wft?)
+#include <wx/imaglist.h>
+#include <wx/artprov.h>
+#include <wx/txtstrm.h>
+#include <wx/grid.h>
+#include <wx/dir.h>
+#include "mxMainWindow.h"
+#include "egdata.h"
+#include "mxFindDialog.h"
+#include "mxNewWizard.h"
+#include "mxDropTarget.h"
+#include "ids.h"
+#include "Parser.h"
+#include "ConfigManager.h"
+#include "DebugManager.h"
+#include "HelpManager.h"
+#include "ShareManager.h"
+#include "ProjectManager.h"
+#include "mxUtils.h"
+#include "mxSource.h"
+#include "mxGotoLineWindow.h"
+#include "mxAboutWindow.h"
+#include "mxCompileConfigWindow.h"
+#include "mxProjectConfigWindow.h"
+#include "mxPreferenceWindow.h"
+#include "mxTipsWindow.h"
+#include "mxHelpWindow.h"
+#include "mxStatusBar.h"
+#include "mxArt.h"
+#include "mxMessageDialog.h"
+#include "mxValgrindOuput.h"
+#include "mxGotoFunctionDialog.h"
+#include "mxGotoFileDialog.h"
+#include "mxInspectionsPanel.h"
+#include "mxThreadGrid.h"
+#include "mxBacktraceGrid.h"
+#include "CodeExporter.h"
+#include "mxExeInfo.h"
+#include "mxBreakList.h"
+#include "mxUpdatesChecker.h"
+#include "mxBreakOptions.h"
+#include "mxArgumentsDialog.h"
+#include "error_recovery.h"
+#include "mxSplashScreen.h"
+#include "mxProjectGeneralConfig.h"
+#include "mxPrintOut.h"
+#include "mxTreeCtrl.h"
+#include "mxWelcomePanel.h"
+#include "mxOpenRecentDialog.h"
+#include "Language.h"
+#include "mxOSD.h"
+#include "mxApplication.h"
+#include "mxBeginnerPanel.h"
+#include "mxDiffSideBar.h"
+#include "mxCustomTools.h"
+#include "parserData.h"
+#include "mxTextDialog.h"
+#include "mxMultipleFileChooser.h"
+#include "mxCompiler.h"
+#include "Autocoder.h"
+#include "mxColoursEditor.h"
+#include "Toolchain.h"
+#include "CodeHelper.h"
+#include <iostream>
+#include "mxGCovSideBar.h"
+#include "mxReferenceWindow.h"
+#include "DebugPatcher.h"
+#include "mxGdbCommandsPanel.h"
+#include "mxSignalsSettings.h"
+#include "MenusAndToolsConfig.h"
+#include "mxShortcutsDialog.h"
+#include "mxExternCompilerOutput.h"
+#include "mxBySourceCompilingOpts.h"
+#include "mxRegistersGrid.h"
+#include "Cpp11.h"
+#include "LocalRefactory.h"
+#include "mxCommandFinder.h"
+#include "SimpleTemplates.h"
+#include "mxGdbAsmPanel.h"
+#include "CompilerErrorsManager.h"
+#include "mxAUI.h"
+#include "mxSourceParsingAux.h"
+#include "asserts.h"
+#include "compiler_strings.h"
+#include "EnvVars.h"
+#include "mxMiniMapPanel.h"
+#include "mxHidenPanel.h"
+#include "ZLog.h"
+#include "osdep.h"
+#include "mxTemplateCombination.h"
+#include "mxSourceUndoHistory.h"
+using namespace std;
+
+#define SIN_TITULO (wxString("<")<<LANG(UNTITLED,"sin_titulo_")<<(++untitled_count)<<">")
+#define LAST_TITULO (wxString("<")<<LANG(UNTITLED,"sin_titulo_")<<(untitled_count)<<">")
+
+#ifdef __WIN32__
+#include "zinjai-w32.xpm"
+#else
+#include "zinjai-lnx.xpm"
+#endif
+
+#ifdef __WIN32__
+#define SameFile(f1,f2) (f1==f2)
+#else
+#include <sys/stat.h>
+inline bool SameFile(wxString f1, wxString f2) {
+	struct stat df1; struct stat df2;
+	lstat (f1.c_str(), &df1);
+	lstat (f2.c_str(), &df2);
+	return (df1.st_dev==df2.st_dev && df1.st_ino==df2.st_ino);
+}
+inline bool SameFile(wxString f1, wxFileName f2) {
+	struct stat df1; struct stat df2;
+	lstat (f1.c_str(), &df1);
+	lstat (f2.GetFullPath().c_str(), &df2);
+	return (df1.st_dev==df2.st_dev && df1.st_ino==df2.st_ino);
+}
+inline bool SameFile(wxFileName f1, wxString f2) {
+	struct stat df1; struct stat df2;
+	lstat (f1.GetFullPath().c_str(), &df1);
+	lstat (f2.c_str(), &df2);
+	return (df1.st_dev==df2.st_dev && df1.st_ino==df2.st_ino);
+}
+inline bool SameFile(wxFileName f1, wxFileName f2) {
+	struct stat df1; struct stat df2;
+	lstat (f1.GetFullPath().c_str(), &df1);
+	lstat (f2.GetFullPath().c_str(), &df2);
+	return (df1.st_dev==df2.st_dev && df1.st_ino==df2.st_ino);
+}
+#endif
+
+
+#define _record_this_action_in_macro(_id) \
+	class MacroMasker {  \
+		bool is_masked; \
+	public: \
+		MacroMasker(int id) { \
+			is_masked = main_window->m_macro && (*main_window->m_macro)[0].msg==1; \
+			if (!is_masked) return; (*main_window->m_macro)[0].msg=0; \
+			main_window->m_macro->Add(mxSource::MacroAction(id)); \
+		} \
+		~MacroMasker() { if (is_masked) (*main_window->m_macro)[0].msg=1; } \
+	} macro_masker(_id);
+
+mxMainWindow *main_window = nullptr;
+
+mxSource *EXTERNAL_SOURCE = nullptr; // will be main_window address, an impossible address for a real mxSource, so OpenFile can use to say "was opened, but not by me, amy be wxfb or someone else"
+
+BEGIN_EVENT_TABLE(mxMainWindow, wxFrame)
+	
+	EVT_SIZE(mxMainWindow::OnResize)
+//	EVT_MENU_OPEN(mxMainWindow::OnMenuOpen)
+	
+	EVT_TOOL_RCLICKED(wxID_ANY,mxMainWindow::OnToolRightClick)
+	
+	EVT_MENU(mxID_FILE_PRINT, mxMainWindow::OnFilePrint)
+	EVT_MENU(mxID_FILE_NEW, mxMainWindow::OnFileNew)
+	EVT_MENU(mxID_FILE_PROJECT, mxMainWindow::OnFileNewProject)
+	EVT_MENU(mxID_FILE_OPEN, mxMainWindow::OnFileOpen)
+	EVT_MENU(mxID_FILE_OPEN_SELECTED, mxMainWindow::OnFileOpenSelected)
+	EVT_MENU(mxID_FILE_OPEN_H, mxMainWindow::OnFileOpenH)
+	EVT_MENU(mxID_FILE_RELOAD, mxMainWindow::OnFileReload)
+	EVT_MENU(mxID_FILE_EXPORT_HTML, mxMainWindow::OnFileExportHtml)
+	EVT_MENU(mxID_FILE_CLOSE, mxMainWindow::OnFileClose)
+	EVT_MENU(mxID_FILE_CLOSE_ALL, mxMainWindow::OnFileCloseAll)
+	EVT_MENU(mxID_FILE_CLOSE_ALL_BUT_ONE, mxMainWindow::OnFileCloseAllButOne)
+	EVT_MENU(mxID_FILE_SAVE_PROJECT, mxMainWindow::OnFileSaveProject)
+	EVT_MENU(mxID_FILE_CLOSE_PROJECT, mxMainWindow::OnFileCloseProject)
+	EVT_MENU(mxID_FILE_SAVE, mxMainWindow::OnFileSave)
+	EVT_MENU(mxID_FILE_SAVE_AS, mxMainWindow::OnFileSaveAs)
+	EVT_MENU(mxID_FILE_SAVE_ALL, mxMainWindow::OnFileSaveAll)
+	EVT_MENU(mxID_FILE_EXIT, mxMainWindow::OnExit)
+	EVT_MENU(mxID_FILE_EXPLORE_FOLDER, mxMainWindow::OnFileExploreFolder)
+	EVT_MENU(mxID_FILE_OPEN_FOLDER, mxMainWindow::OnFileOpenFolder)
+	EVT_MENU(mxID_FILE_PROPERTIES, mxMainWindow::OnFileProperties)
+	EVT_MENU(mxID_FILE_PREFERENCES, mxMainWindow::OnPreferences)
+	EVT_MENU(mxID_FILE_PROJECT_CONFIG, mxMainWindow::OnFileProjectConfig)
+	EVT_MENU(mxID_FILE_SOURCE_HISTORY_MORE, mxMainWindow::OnFileSourceHistoryMore)
+	EVT_MENU(mxID_FILE_PROJECT_HISTORY_MORE, mxMainWindow::OnFileProjectHistoryMore)
+	EVT_MENU_RANGE(mxID_FILE_SOURCE_HISTORY_0, mxID_FILE_SOURCE_HISTORY_30,mxMainWindow::OnFileSourceHistory)
+	EVT_MENU_RANGE(mxID_FILE_PROJECT_HISTORY_0, mxID_FILE_PROJECT_HISTORY_30,mxMainWindow::OnFileProjectHistory)
+	EVT_MENU(mxID_FILE_SET_AS_MASTER, mxMainWindow::OnFileSetAsMaster)
+	
+	EVT_MENU(mxID_EDIT_SELECT_ALL, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_UNDO, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_REDO, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_UNDO_HISTORY, mxMainWindow::OnEditUndoHistory)
+	EVT_MENU(mxID_EDIT_MAKE_LOWERCASE, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_MAKE_UPPERCASE, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_COPY, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_CUT, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_PASTE, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_TOOLBAR_FIND, mxMainWindow::OnToolbarFindEnter)
+	EVT_MENU(mxID_EDIT_FIND_FROM_TOOLBAR, mxMainWindow::OnGotoToolbarFind)
+	EVT_MENU(mxID_EDIT_FIND, mxMainWindow::OnEditFind)
+	EVT_MENU(mxID_EDIT_FIND_NEXT, mxMainWindow::OnEditFindNext)
+	EVT_MENU(mxID_EDIT_FIND_PREV, mxMainWindow::OnEditFindPrev)
+	EVT_MENU(mxID_EDIT_REPLACE, mxMainWindow::OnEditReplace)
+	EVT_MENU(mxID_EDIT_BRACEMATCH, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_INDENT, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_GOTO, mxMainWindow::OnEditGoto)
+	EVT_MENU(mxID_SOURCE_GOTO_DEFINITION, mxMainWindow::OnSourceGotoDefinition)
+	EVT_MENU(mxID_EDIT_GOTO_FUNCTION, mxMainWindow::OnEditGotoFunction)
+	EVT_MENU(mxID_EDIT_GOTO_FILE, mxMainWindow::OnEditGotoFile)
+	EVT_MENU(mxID_EDIT_COMMENT, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_UNCOMMENT, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_TOGGLE_LINES_UP, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_TOGGLE_LINES_DOWN, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_DUPLICATE_LINES, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_DELETE_LINES, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_MARK_LINES, mxMainWindow::OnEditNeedFocus)
+	EVT_MENU(mxID_EDIT_LIST_MARKS, mxMainWindow::OnEditListMarks)
+	EVT_MENU(mxID_EDIT_GOTO_MARK, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_HIGHLIGHT_WORD, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_INSERT_HEADER, mxMainWindow::OnEditInsertInclude)
+	EVT_MENU(mxID_EDIT_AUTOCODE_AUTOCOMPLETE, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_FORCE_AUTOCOMPLETE, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_FIND_KEYWORD,mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_HIGHLIGHTED_WORD_EDITION, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_EDIT_RECTANGULAR_EDITION, mxMainWindow::OnEdit)
+//	EVT_MENU(mxID_EDIT_FUZZY_AUTOCOMPLETE, mxMainWindow::OnEdit)
+	EVT_MENU(mxID_NAVIGATION_HISTORY_PREV, mxMainWindow::OnNavigationHistoryPrev)
+	EVT_MENU(mxID_NAVIGATION_HISTORY_NEXT, mxMainWindow::OnNavigationHistoryNext)
+	
+	EVT_MENU(mxID_CHANGE_SHORTCUTS, mxMainWindow::OnChangeShortcuts)
+	
+	EVT_MENU(mxID_MACRO_RECORD, mxMainWindow::OnMacroRecord)
+	EVT_MENU(mxID_MACRO_REPLAY, mxMainWindow::OnMacroReplay)
+	
+	EVT_MENU(mxID_RUN_RUN, mxMainWindow::OnRunRun)
+	EVT_MENU(mxID_RUN_RUN_OLD, mxMainWindow::OnRunRunOld)
+	EVT_MENU(mxID_RUN_STOP, mxMainWindow::OnRunStop)
+//	EVT_MENU(mxID_RUN_BUILD, mxMainWindow::OnRunBuild)
+	EVT_MENU(mxID_RUN_COMPILE, mxMainWindow::OnRunCompile)
+	EVT_MENU(mxID_RUN_CLEAN, mxMainWindow::OnRunClean)
+	EVT_MENU(mxID_RUN_CONFIG, mxMainWindow::OnRunCompileConfig)
+	
+	EVT_MENU(mxID_DEBUG_ATTACH, mxMainWindow::OnDebugAttach)
+	EVT_MENU(mxID_DEBUG_TARGET, mxMainWindow::OnDebugTarget)
+	EVT_MENU(mxID_DEBUG_PATCH, mxMainWindow::OnDebugPatch)
+	EVT_MENU(mxID_DEBUG_SAVE_CORE_DUMP, mxMainWindow::OnDebugCoreDump)
+	EVT_MENU(mxID_DEBUG_LOAD_CORE_DUMP, mxMainWindow::OnDebugCoreDump)
+	EVT_MENU(mxID_DEBUG_SHOW_REGISTERS, mxMainWindow::OnDebugShowRegisters)
+	EVT_MENU(mxID_DEBUG_SHOW_ASM, mxMainWindow::OnDebugShowAsm)
+	EVT_MENU(mxID_DEBUG_SEND_SIGNAL, mxMainWindow::OnDebugSendSignal)
+	EVT_MENU(mxID_DEBUG_SET_SIGNALS, mxMainWindow::OnDebugSetSignals)
+	EVT_MENU(mxID_DEBUG_GDB_COMMAND, mxMainWindow::OnDebugGdbCommand)
+	EVT_MENU(mxID_DEBUG_THREADLIST, mxMainWindow::OnDebugThreadList)
+	EVT_MENU(mxID_DEBUG_BACKTRACE, mxMainWindow::OnDebugBacktrace)
+	EVT_MENU(mxID_DEBUG_UPDATE_INSPECTIONS, mxMainWindow::OnDebugUpdateInspections)
+	EVT_MENU(mxID_DEBUG_INSPECT, mxMainWindow::OnDebugInspect)
+	EVT_MENU(mxID_DEBUG_STOP, mxMainWindow::OnDebugStop)
+	EVT_MENU(mxID_DEBUG_PAUSE, mxMainWindow::OnDebugPause)
+	EVT_MENU(mxID_DEBUG_RUN, mxMainWindow::OnDebugRun)
+	EVT_MENU(mxID_DEBUG_STEP_IN, mxMainWindow::OnDebugStepIn)
+	EVT_MENU(mxID_DEBUG_STEP_OUT, mxMainWindow::OnDebugStepOut)
+	EVT_MENU(mxID_DEBUG_AUTO_STEP, mxMainWindow::OnDebugAutoStep)
+	EVT_MENU(mxID_DEBUG_STEP_OVER, mxMainWindow::OnDebugStepOver)
+	EVT_MENU(mxID_DEBUG_BREAKPOINT_OPTIONS, mxMainWindow::OnDebugBreakpointOptions)
+	EVT_MENU(mxID_DEBUG_INSERT_WATCHPOINT, mxMainWindow::OnDebugInsertWatchpoint)
+	EVT_MENU(mxID_DEBUG_LIST_BREAKPOINTS, mxMainWindow::OnDebugListBreakpoints)
+	EVT_MENU(mxID_DEBUG_TOGGLE_BREAKPOINT, mxMainWindow::OnDebugToggleBreakpoint)
+	EVT_MENU(mxID_DEBUG_ENABLE_DISABLE_BREAKPOINT, mxMainWindow::OnDebugEnableDisableBreakpoint)
+	EVT_MENU(mxID_DEBUG_RETURN, mxMainWindow::OnDebugReturn)
+	EVT_MENU(mxID_DEBUG_JUMP, mxMainWindow::OnDebugJump)
+	EVT_MENU(mxID_DEBUG_RUN_UNTIL, mxMainWindow::OnDebugRunUntil)
+	EVT_MENU(mxID_DEBUG_DO_THAT, mxMainWindow::OnDebugDoThat)
+	EVT_MENU(mxID_DEBUG_ENABLE_INVERSE_EXEC, mxMainWindow::OnDebugEnableInverseExecution)
+	EVT_MENU(mxID_DEBUG_INVERSE_EXEC, mxMainWindow::OnDebugInverseExecution)
+	EVT_MENU(mxID_DEBUG_RETURN_FOCUS_ON_CONTINUE, mxMainWindow::OnDebugReturnFocusOnContinue)
+	EVT_MENU(mxID_DEBUG_INSPECT_ON_MOUSE_OVER, mxMainWindow::OnDebugInspectOnMouseOver)
+	EVT_MENU(mxID_DEBUG_LOG_PANEL, mxMainWindow::OnDebugShowLogPanel)
+
+	EVT_MENU(mxID_INTERNAL_INFO, mxMainWindow::OnInternalInfo)
+	
+	EVT_MENU(mxID_VIEW_HIDE_SOMETHING, mxMainWindow::OnEscapePressed)
+	EVT_MENU(mxID_VIEW_DUPLICATE_TAB, mxMainWindow::OnViewDuplicateTab)
+	EVT_MENU(mxID_VIEW_BEGINNER_PANEL, mxMainWindow::OnViewBeginnerPanel)
+	EVT_MENU(mxID_VIEW_NEXT_ERROR, mxMainWindow::OnViewNextError)
+	EVT_MENU(mxID_VIEW_PREV_ERROR, mxMainWindow::OnViewPrevError)
+	EVT_MENU(mxID_VIEW_PROJECT_TREE, mxMainWindow::OnViewProjectTree)
+	EVT_MENU(mxID_VIEW_MINIMAP, mxMainWindow::OnViewMinimapPanel)
+	EVT_MENU(mxID_VIEW_COMPILER_TREE, mxMainWindow::OnViewCompilerTree)
+	EVT_MENU(mxID_VIEW_EXPLORER_TREE, mxMainWindow::OnViewExplorerTree)
+	EVT_MENU(mxID_VIEW_SYMBOLS_TREE, mxMainWindow::OnViewSymbolsTree)
+	EVT_MENU(mxID_VIEW_UPDATE_SYMBOLS, mxMainWindow::OnViewUpdateSymbols)
+	EVT_MENU(mxID_VIEW_TOOLBAR_PROJECT, mxMainWindow::OnViewToolbarProject)
+	EVT_MENU(mxID_VIEW_TOOLBAR_MISC, mxMainWindow::OnViewToolbarMisc)
+	EVT_MENU(mxID_VIEW_TOOLBAR_TOOLS, mxMainWindow::OnViewToolbarTools)
+	EVT_MENU(mxID_VIEW_TOOLBAR_VIEW, mxMainWindow::OnViewToolbarView)
+	EVT_MENU(mxID_VIEW_TOOLBAR_FILE, mxMainWindow::OnViewToolbarFile)
+	EVT_MENU(mxID_VIEW_TOOLBAR_EDIT, mxMainWindow::OnViewToolbarEdit)
+	EVT_MENU(mxID_VIEW_TOOLBAR_DEBUG, mxMainWindow::OnViewToolbarDebug)
+	EVT_MENU(mxID_VIEW_TOOLBAR_RUN, mxMainWindow::OnViewToolbarRun)
+	EVT_MENU(mxID_VIEW_TOOLBAR_FIND, mxMainWindow::OnViewToolbarFind)
+	EVT_MENU(mxID_VIEW_TOOLBARS_CONFIG, mxMainWindow::OnViewToolbarsConfig)
+	EVT_MENU(mxID_VIEW_WHITE_SPACE, mxMainWindow::OnViewWhiteSpace)
+	EVT_MENU(mxID_VIEW_LINE_WRAP, mxMainWindow::OnViewLineWrap)
+	EVT_MENU(mxID_VIEW_CODE_STYLE, mxMainWindow::OnViewCodeStyle)
+	EVT_MENU(mxID_VIEW_CODE_COLOURS, mxMainWindow::OnViewCodeColours)
+	EVT_MENU(mxID_VIEW_NOTEBOOK_NEXT, mxMainWindow::OnViewNotebookNext)
+	EVT_MENU(mxID_VIEW_NOTEBOOK_PREV, mxMainWindow::OnViewNotebookPrev)
+	EVT_MENU(mxID_VIEW_HIDE_BOTTOM, mxMainWindow::OnViewHideBottom)
+	EVT_MENU(mxID_VIEW_FULLSCREEN, mxMainWindow::OnViewFullScreen)
+
+	EVT_MENU(mxID_FOLD_SHOW_1, mxMainWindow::OnFoldShow1)
+	EVT_MENU(mxID_FOLD_SHOW_2, mxMainWindow::OnFoldShow2)
+	EVT_MENU(mxID_FOLD_SHOW_3, mxMainWindow::OnFoldShow3)
+	EVT_MENU(mxID_FOLD_SHOW_4, mxMainWindow::OnFoldShow4)
+	EVT_MENU(mxID_FOLD_SHOW_5, mxMainWindow::OnFoldShow5)
+	EVT_MENU(mxID_FOLD_SHOW_ALL, mxMainWindow::OnFoldShowAll)
+	EVT_MENU(mxID_FOLD_HIDE_1, mxMainWindow::OnFoldHide1)
+	EVT_MENU(mxID_FOLD_HIDE_2, mxMainWindow::OnFoldHide2)
+	EVT_MENU(mxID_FOLD_HIDE_3, mxMainWindow::OnFoldHide3)
+	EVT_MENU(mxID_FOLD_HIDE_4, mxMainWindow::OnFoldHide4)
+	EVT_MENU(mxID_FOLD_HIDE_5, mxMainWindow::OnFoldHide5)
+	EVT_MENU(mxID_FOLD_HIDE_ALL, mxMainWindow::OnFoldHideAll)
+	EVT_MENU(mxID_FOLD_FOLD, mxMainWindow::OnFoldFold)
+	EVT_MENU(mxID_FOLD_UNFOLD, mxMainWindow::OnFoldUnFold)
+	
+	EVT_MENU(mxID_TOOLS_MAKEFILE, mxMainWindow::OnToolsExportMakefile)
+	EVT_MENU(mxID_TOOLS_CREATE_TEMPLATE, mxMainWindow::OnToolsCreateTemplate)
+	EVT_MENU(mxID_TOOLS_COMBINE_TEMPLATE, mxMainWindow::OnToolsCombineTemplate)
+	EVT_MENU(mxID_TOOLS_PREPROC_UNMARK_ALL, mxMainWindow::OnToolsPreprocUnMarkAll)
+	EVT_MENU(mxID_TOOLS_PREPROC_MARK_VALID, mxMainWindow::OnToolsPreprocMarkValid)
+	EVT_MENU(mxID_TOOLS_PREPROC_EXPAND_MACROS, mxMainWindow::OnToolsPreprocReplaceMacros)
+	EVT_MENU(mxID_TOOLS_PREPROC_HELP, mxMainWindow::OnToolsPreprocHelp)
+	EVT_MENU(mxID_TOOLS_CODE_POPUP, mxMainWindow::OnToolsCodePoupup)
+	EVT_MENU(mxID_TOOLS_CODE_EXTRACT_FUNCTION, mxMainWindow::OnToolsCodeExtractFunction)
+	EVT_MENU(mxID_TOOLS_CODE_GENERATE_FUNCTION_DEF, mxMainWindow::OnToolsCodeGenerateFunctionDef)
+	EVT_MENU(mxID_TOOLS_CODE_GENERATE_FUNCTION_DEC, mxMainWindow::OnToolsCodeGenerateFunctionDec)
+	EVT_MENU(mxID_TOOLS_CODE_SURROUND_IF, mxMainWindow::OnToolsCodeSurroundIf)
+	EVT_MENU(mxID_TOOLS_CODE_SURROUND_WHILE, mxMainWindow::OnToolsCodeSurroundWhile)
+	EVT_MENU(mxID_TOOLS_CODE_SURROUND_DO, mxMainWindow::OnToolsCodeSurroundDo)
+	EVT_MENU(mxID_TOOLS_CODE_SURROUND_FOR, mxMainWindow::OnToolsCodeSurroundFor)
+	EVT_MENU(mxID_TOOLS_CODE_SURROUND_IFDEF, mxMainWindow::OnToolsCodeSurroundIfdef)
+	EVT_MENU(mxID_TOOLS_CODE_COPY_FROM_H, mxMainWindow::OnToolsCodeCopyFromH)
+	EVT_MENU(mxID_TOOLS_CONSOLE, mxMainWindow::OnToolsConsole)
+	EVT_MENU(mxID_TOOLS_DRAW_PROJECT, mxMainWindow::OnToolsDrawProject)
+	EVT_MENU(mxID_TOOLS_DRAW_CLASSES, mxMainWindow::OnToolsDrawClasses)
+	EVT_MENU(mxID_TOOLS_DRAW_FLOW, mxMainWindow::OnToolsDrawFlow)
+	EVT_MENU(mxID_TOOLS_PROJECT_STATISTICS, mxMainWindow::OnToolsProjectStatistics)
+	EVT_MENU(mxID_TOOLS_EXE_PROPS, mxMainWindow::OnToolsExeProps)
+	EVT_MENU(mxID_TOOLS_SHARE_SHARE, mxMainWindow::OnToolsShareShare)
+	EVT_MENU(mxID_TOOLS_SHARE_OPEN, mxMainWindow::OnToolsShareOpen)
+	EVT_MENU(mxID_TOOLS_SHARE_LIST, mxMainWindow::OnToolsShareList)
+	EVT_MENU(mxID_TOOLS_SHARE_HELP, mxMainWindow::OnToolsShareHelp)
+	EVT_MENU(mxID_TOOLS_DOXY_HELP, mxMainWindow::OnToolsDoxyHelp)
+	EVT_MENU(mxID_TOOLS_DOXY_CONFIG, mxMainWindow::OnToolsDoxyConfig)
+	EVT_MENU(mxID_TOOLS_DOXY_GENERATE, mxMainWindow::OnToolsDoxyGenerate)
+	EVT_MENU(mxID_TOOLS_DOXY_VIEW, mxMainWindow::OnToolsDoxyView)
+	EVT_MENU(mxID_TOOLS_WXFB_UPDATE_INHERIT, mxMainWindow::OnToolsWxfbUpdateInherit)
+	EVT_MENU(mxID_TOOLS_WXFB_INHERIT_CLASS, mxMainWindow::OnToolsWxfbInheritClass)
+	EVT_MENU(mxID_TOOLS_WXFB_CONFIG, mxMainWindow::OnToolsWxfbConfig)
+	EVT_MENU(mxID_TOOLS_WXFB_NEW_RES, mxMainWindow::OnToolsWxfbNewRes)
+	EVT_MENU(mxID_TOOLS_WXFB_LOAD_RES, mxMainWindow::OnToolsWxfbLoadRes)
+	EVT_MENU(mxID_TOOLS_WXFB_REGEN, mxMainWindow::OnToolsWxfbRegen)
+	EVT_MENU(mxID_TOOLS_WXFB_HELP, mxMainWindow::OnToolsWxfbHelp)
+	EVT_MENU(mxID_TOOLS_WXFB_HELP_WX, mxMainWindow::OnToolsWxfbHelpWx)
+	EVT_MENU(mxID_TOOLS_DIFF_NEXT, mxMainWindow::OnToolsDiffNextMark)
+	EVT_MENU(mxID_TOOLS_DIFF_PREV, mxMainWindow::OnToolsDiffPrevMark)
+	EVT_MENU(mxID_TOOLS_DIFF_TWO, mxMainWindow::OnToolsDiffTwoSources)
+	EVT_MENU(mxID_TOOLS_DIFF_DISK, mxMainWindow::OnToolsDiffToDiskFile)
+	EVT_MENU(mxID_TOOLS_DIFF_HIMSELF, mxMainWindow::OnToolsDiffToHimself)
+	EVT_MENU(mxID_TOOLS_DIFF_CLEAR, mxMainWindow::OnToolsDiffClear)
+	EVT_MENU(mxID_TOOLS_DIFF_SHOW, mxMainWindow::OnToolsDiffShow)
+	EVT_MENU(mxID_TOOLS_DIFF_APPLY, mxMainWindow::OnToolsDiffApply)
+	EVT_MENU(mxID_TOOLS_DIFF_DISCARD, mxMainWindow::OnToolsDiffDiscard)
+	EVT_MENU(mxID_TOOLS_DIFF_HELP, mxMainWindow::OnToolsDiffHelp)
+	EVT_MENU(mxID_TOOLS_LIZARD_RUN, mxMainWindow::OnToolsLizardRun)
+	EVT_MENU(mxID_TOOLS_LIZARD_HELP, mxMainWindow::OnToolsLizardHelp)
+	EVT_MENU(mxID_TOOLS_GPROF_SHOW, mxMainWindow::OnToolsGprofShow)
+	EVT_MENU(mxID_TOOLS_GPROF_LIST, mxMainWindow::OnToolsGprofList)
+	EVT_MENU(mxID_TOOLS_GPROF_SET, mxMainWindow::OnToolsGprofSet)
+	EVT_MENU(mxID_TOOLS_GPROF_HELP, mxMainWindow::OnToolsGprofHelp)
+	EVT_MENU(mxID_TOOLS_GPROF_FDP, mxMainWindow::OnToolsGprofFdp)
+	EVT_MENU(mxID_TOOLS_GPROF_DOT, mxMainWindow::OnToolsGprofDot)
+	EVT_MENU(mxID_TOOLS_GCOV_SET, mxMainWindow::OnToolsGcovSet)
+	EVT_MENU(mxID_TOOLS_GCOV_SHOW, mxMainWindow::OnToolsGcovShow)
+	EVT_MENU(mxID_TOOLS_GCOV_RESET, mxMainWindow::OnToolsGcovReset)
+	EVT_MENU(mxID_TOOLS_GCOV_HELP, mxMainWindow::OnToolsGcovHelp)
+	EVT_MENU(mxID_TOOLS_GCOV_LCOV_RUN, mxMainWindow::OnToolsGcovRunLCov)
+	EVT_MENU(mxID_TOOLS_WRAP_COMMENT, mxMainWindow::OnToolsWrapComment)
+	EVT_MENU(mxID_TOOLS_ALIGN_COMMENTS, mxMainWindow::OnToolsAlignComments)
+	EVT_MENU(mxID_TOOLS_REMOVE_COMMENTS, mxMainWindow::OnToolsRemoveComments)
+	EVT_MENU(mxID_TOOLS_CPPCHECK_RUN, mxMainWindow::OnToolsCppCheckRun)
+	EVT_MENU(mxID_TOOLS_CPPCHECK_CONFIG, mxMainWindow::OnToolsCppCheckConfig)
+	EVT_MENU(mxID_TOOLS_CPPCHECK_VIEW, mxMainWindow::OnToolsCppCheckView)
+	EVT_MENU(mxID_TOOLS_CPPCHECK_HELP, mxMainWindow::OnToolsCppCheckHelp)
+	EVT_MENU(mxID_TOOLS_OBJDUMP_DISASM_SELECTION, mxMainWindow::OnToolsDisassembleOfflineSel)
+	EVT_MENU(mxID_TOOLS_OBJDUMP_DISASM_FUNCTION, mxMainWindow::OnToolsDisassembleOfflineFunc)
+#ifndef __WIN32__
+	EVT_MENU(mxID_TOOLS_VALGRIND_RUN, mxMainWindow::OnToolsValgrindRun)
+	EVT_MENU(mxID_TOOLS_VALGRIND_DEBUG, mxMainWindow::OnToolsValgrindDebug)
+	EVT_MENU(mxID_TOOLS_VALGRIND_VIEW, mxMainWindow::OnToolsValgrindView)
+	EVT_MENU(mxID_TOOLS_VALGRIND_HELP, mxMainWindow::OnToolsValgrindHelp)
+#endif
+	EVT_MENU_RANGE(mxID_CUSTOM_TOOL_0, mxID_CUSTOM_TOOL_0+MAX_CUSTOM_TOOLS,mxMainWindow::OnToolsCustomTool)
+	EVT_MENU_RANGE(mxID_CUSTOM_PROJECT_TOOL_0, mxID_CUSTOM_PROJECT_TOOL_0+MAX_PROJECT_CUSTOM_TOOLS,mxMainWindow::OnToolsCustomProjectTool)
+	EVT_MENU(mxID_TOOLS_CUSTOM_TOOLS_SETTINGS, mxMainWindow::OnToolsCustomToolsSettings)
+	EVT_MENU(mxID_TOOLS_PROJECT_TOOLS_SETTINGS, mxMainWindow::OnToolsProjectToolsSettings)
+	EVT_MENU(mxID_TOOLS_CUSTOM_HELP, mxMainWindow::OnToolsCustomHelp)
+	EVT_MENU(mxID_TOOLS_INSTALL_COMPLEMENTS, mxMainWindow::OnToolsInstallComplements)
+	
+	EVT_MENU(mxID_HELP_FIND_COMMAND, mxMainWindow::OnHelpFindCommand)
+	EVT_MENU(mxID_HELP_SHORTCUTS, mxMainWindow::OnHelpShortcuts)
+	EVT_MENU(mxID_HELP_OPINION, mxMainWindow::OnHelpOpinion)
+	EVT_MENU(mxID_HELP_TUTORIAL, mxMainWindow::OnHelpTutorial)
+	EVT_MENU(mxID_HELP_ABOUT, mxMainWindow::OnHelpAbout)
+	EVT_MENU(mxID_HELP_GUI, mxMainWindow::OnHelpGui)
+	EVT_MENU(mxID_HELP_CPP, mxMainWindow::OnHelpCpp)
+	EVT_MENU(mxID_HELP_CODE, mxMainWindow::OnHelpCode)
+	EVT_MENU(mxID_HELP_TIP, mxMainWindow::OnHelpTip)
+	EVT_MENU(mxID_HELP_UPDATES, mxMainWindow::OnHelpUpdates)
+	EVT_MENU(mxID_HELP_PROJECT, mxMainWindow::OnHelpProject)
+	
+	EVT_MENU_RANGE(mxID_LAST_ID, mxID_LAST_ID+50,mxMainWindow::OnToolbarMenu)
+		
+	EVT_AUI_PANE_CLOSE(mxMainWindow::OnPaneClose)
+	EVT_AUINOTEBOOK_PAGE_CLOSE(mxID_NOTEBOOK_SOURCES, mxMainWindow::OnNotebookPageClose)
+	EVT_AUINOTEBOOK_TAB_RIGHT_DOWN(mxID_NOTEBOOK_SOURCES, mxMainWindow::OnNotebookRightClick)
+	EVT_AUINOTEBOOK_PAGE_CHANGED(mxID_NOTEBOOK_SOURCES, mxMainWindow::OnNotebookPageChanged)
+	
+	EVT_END_PROCESS(wxID_ANY, mxMainWindow::OnProcessTerminate)
+	
+	EVT_TREE_ITEM_ACTIVATED(wxID_ANY, mxMainWindow::OnSelectTreeItem)
+	
+	EVT_HTML_LINK_CLICKED(wxID_ANY, mxMainWindow::OnQuickHelpLink)
+	
+	EVT_CLOSE(mxMainWindow::OnClose)
+	
+	EVT_TREE_ITEM_RIGHT_CLICK(mxID_TREE_SYMBOLS, mxMainWindow::OnSymbolTreePopup)
+	EVT_MENU(mxID_SYMBOL_POPUP_DEC, mxMainWindow::OnSymbolTreeDec)
+	EVT_MENU(mxID_SYMBOL_POPUP_DEF, mxMainWindow::OnSymbolTreeDef)
+	EVT_MENU(mxID_SYMBOL_POPUP_INCLUDES, mxMainWindow::OnSymbolTreeIncludes)
+	EVT_MENU(mxID_SYMBOL_GENERATE_CACHE, mxMainWindow::OnSymbolsGenerateAutocompletionIndex)
+	
+	EVT_TREE_ITEM_RIGHT_CLICK(mxID_TREE_EXPLORER, mxMainWindow::OnExplorerTreePopup)
+	EVT_MENU(mxID_EXPLORER_POPUP_UPDATE, mxMainWindow::OnExplorerTreeUpdate)
+	EVT_MENU(mxID_EXPLORER_POPUP_CHANGE_PATH, mxMainWindow::OnExplorerTreeChangePath)
+	EVT_MENU(mxID_EXPLORER_POPUP_PATH_UP, mxMainWindow::OnExplorerTreePathUp)
+	EVT_MENU(mxID_EXPLORER_POPUP_OPEN_ONE_ZINJAI, mxMainWindow::OnExplorerTreeOpenOneZinjaI)
+	EVT_MENU(mxID_EXPLORER_POPUP_OPEN_ONE_EXTERN, mxMainWindow::OnExplorerTreeOpenOneExtern)
+	EVT_MENU(mxID_EXPLORER_POPUP_OPEN_ALL, mxMainWindow::OnExplorerTreeOpenAll)
+	EVT_MENU(mxID_EXPLORER_POPUP_OPEN_SOURCES, mxMainWindow::OnExplorerTreeOpenSources)
+	EVT_MENU(mxID_EXPLORER_POPUP_SHOW_ONLY_SOURCES, mxMainWindow::OnExplorerTreeShowOnlySources)
+	EVT_MENU(mxID_EXPLORER_POPUP_SET_AS_PATH, mxMainWindow::OnExplorerTreeSetAsPath)
+	
+	EVT_TREE_ITEM_RIGHT_CLICK(mxID_TREE_PROJECT, mxMainWindow::OnProjectTreePopup)
+	EVT_TREE_ITEM_RIGHT_CLICK(mxID_TREE_COMPILER, mxMainWindow::OnCompilerTreePopup)
+	EVT_MENU(mxID_COMPILER_POPUP_FULL, mxMainWindow::OnCompilerTreeShowFull)
+	EVT_MENU(mxID_COMPILER_POPUP_USTD, mxMainWindow::OnCompilerTreeToggleUnSTD)
+	
+	EVT_MENU(mxID_PROJECT_POPUP_OPEN_FOLDER, mxMainWindow::OnProjectTreeOpenFolder)
+	EVT_MENU(mxID_PROJECT_POPUP_PROPERTIES, mxMainWindow::OnProjectTreeProperties)
+	EVT_MENU(mxID_PROJECT_POPUP_OPEN, mxMainWindow::OnProjectTreeOpen)
+	EVT_MENU(mxID_PROJECT_POPUP_OPEN_ALL, mxMainWindow::OnProjectTreeOpenAll)
+	EVT_MENU(mxID_PROJECT_POPUP_COMPILING_OPTS, mxMainWindow::OnProjectTreeCompilingOpts)
+	EVT_MENU(mxID_PROJECT_POPUP_COMPILE_NOW, mxMainWindow::OnProjectTreeCompileNow)
+	EVT_MENU(mxID_PROJECT_POPUP_COMPILE_FIRST, mxMainWindow::OnProjectTreeCompileFirst)
+	EVT_MENU(mxID_PROJECT_POPUP_READONLY, mxMainWindow::OnProjectTreeToggleReadOnly)
+	EVT_MENU(mxID_PROJECT_POPUP_HIDE_SYMBOLS, mxMainWindow::OnProjectTreeToggleHideSymbols)
+	EVT_MENU(mxID_PROJECT_POPUP_RENAME, mxMainWindow::OnProjectTreeRename)
+	EVT_MENU(mxID_PROJECT_POPUP_DELETE, mxMainWindow::OnProjectTreeDelete)
+	EVT_MENU(mxID_PROJECT_POPUP_MOVE_TO_BLACKLIST, mxMainWindow::OnProjectTreeMoveToBlacklist)
+	EVT_MENU(mxID_PROJECT_POPUP_REMOVE_FROM_BLACKLIST, mxMainWindow::OnProjectTreeRemoveFromBlacklist)
+	EVT_MENU(mxID_PROJECT_POPUP_MOVE_TO_SOURCES, mxMainWindow::OnProjectTreeMoveToSources)
+	EVT_MENU(mxID_PROJECT_POPUP_MOVE_TO_HEADERS, mxMainWindow::OnProjectTreeMoveToHeaders)
+	EVT_MENU(mxID_PROJECT_POPUP_MOVE_TO_OTHERS, mxMainWindow::OnProjectTreeMoveToOthers)
+	EVT_MENU(mxID_PROJECT_POPUP_ADD, mxMainWindow::OnProjectTreeAdd)
+	EVT_MENU(mxID_PROJECT_POPUP_ADD_MULTI, mxMainWindow::OnProjectTreeAddMultiple)
+	EVT_MENU(mxID_PROJECT_POPUP_TOGGLE_FULLPATH, mxMainWindow::OnProjectTreeToggleFullPath)
+	EVT_MENU(mxID_PROJECT_POPUP_ADD_SELECTED, mxMainWindow::OnProjectTreeAddSelected)
+	
+	EVT_MENU(mxID_TOOLBAR_SETTINGS, mxMainWindow::OnToolbarSettings)
+	
+	EVT_SOCKET(wxID_ANY,mxMainWindow::OnSocketEvent)
+	
+	EVT_TIMER(mxID_TIMER_AFTER_EVENTS, mxMainWindow::OnAfterEventsTimer)
+	EVT_MENU(mxID_WHERE_AM_I, mxMainWindow::OnWhereAmI)
+	EVT_TIMER(mxID_COMPILER_TIMER, mxMainWindow::OnParseOutputTime)
+	EVT_TIMER(mxID_PARSER_TIMER, mxMainWindow::OnParseSourceTime)
+	EVT_TIMER(mxID_PARSER_PROCESS_TIMER, mxMainWindow::OnParserContinueProcess)
+
+	EVT_TEXT(mxID_TOOLBAR_FIND, mxMainWindow::OnToolbarFindChange)
+	EVT_TEXT_ENTER(mxID_TOOLBAR_FIND, mxMainWindow::OnToolbarFindEnter)
+	
+	
+//	EVT_KEY_DOWN(mxMainWindow::OnKey)
+//	EVT_CHAR_HOOK(mxMainWindow::OnKey)
+	EVT_ACTIVATE (mxMainWindow::OnActivate)
+	
+END_EVENT_TABLE()
+
+
+/**
+* Hay eventos que llaman al AnalizeConfig del proyecto, que puede requerir expandir subcomandos 
+* y dejar que en el yield del execute se vuelva a invocar otro de estos eventos provocando las 
+* "colisiones" en los executes (yields en yields no tienen efecto). Esta clase maneja un flag
+* para evitar procesar uno de esos eventos.
+**/
+class PreventExecuteYieldExecuteProblem {
+	static bool m_flag; 
+	bool m_owns_flag;
+public:
+	PreventExecuteYieldExecuteProblem() {
+		m_owns_flag=!m_flag;
+		m_flag=true;
+	}
+	~PreventExecuteYieldExecuteProblem() {
+		if (m_owns_flag) m_flag=false;
+	}
+	bool IsOk() { return m_owns_flag; }
+};
+
+bool PreventExecuteYieldExecuteProblem::m_flag=false;
+
+#define _prevent_execute_yield_execute_problem \
+	PreventExecuteYieldExecuteProblem prevent_execute_yield_execute_problem; \
+	if (!prevent_execute_yield_execute_problem.IsOk()) return
+	
+
+mxMainWindow::mxMainWindow(wxWindow* parent, wxWindowID id, const wxString& title, 
+						   const wxPoint& pos, const wxSize& size, long style) 
+	: wxFrame(parent, id, title, pos, size, style) 
+{
+	
+	ZLINF("Application","Entering mxMainWindow's constructor...");	
+	
+	EXTERNAL_SOURCE=(mxSource*)this;
+	focus_source=nullptr;
+	m_macro=nullptr;
+	master_source=nullptr;
+	m_minimap=nullptr;
+		
+	gui_fullscreen_mode=gui_debug_mode=gui_project_mode=false;
+	untitled_count=0;
+	asm_panel=nullptr;
+	registers_panel=nullptr;
+	valgrind_panel=nullptr; 
+
+#ifndef __APPLE__
+	// esto genera el problema de "image file is not of type 9"?
+	SetIcon(wxIcon(zinjai_xpm));
+#endif
+	
+	ZLINF("MainWindow","Initializing aui_manager, menues and toolbars...");	
+	
+ 	m_aui = make_unique<mxAUI>(this);
+	mxAUIFreezeGuard aui_guard(*m_aui);
+	
+	menu_data->CreateMenuesAndToolbars(this); 
+	CreateStatusBar(1,0);
+	status_bar->SetStatusText(LANG(MAINW_INITIALIZING,"Inicializando..."));	
+	
+	ZLINF("MainWindow","Initializing aui_manager, panels...");	
+
+	m_aui->Create(PaneId::Project, project_tree.Create(this) );
+	m_aui->Create(PaneId::Symbols, CreateSymbolsTree() );
+	m_aui->Create(PaneId::Explorer,CreateExplorerTree());
+	
+	m_aui->Create(PaneId::Compiler,CreateCompilerTree());
+	m_aui->Create(PaneId::QuickHelp,CreateQuickHelp());
+	
+	m_aui->Create(PaneId::Inspections, inspection_ctrl = new mxInspectionsPanel(this));
+	m_aui->Create(PaneId::Backtrace, backtrace_ctrl = new mxBacktraceGrid(this));
+	
+	m_aui->Create(PaneId::Threads, threadlist_ctrl = new mxThreadGrid(this) );
+	m_aui->Create(PaneId::DebugMsgs, debug_log_panel = new wxListBox(this,wxID_ANY,wxDefaultPosition,wxDefaultSize,0,nullptr,wxLB_HSCROLL));
+	
+	m_aui->AddPane(CreateNotebookSources(), wxAuiPaneInfo().Name("notebook_sources").CenterPane().PaneBorder(false));
+	
+	if (config->Init.show_welcome) {
+		g_welcome_panel = new mxWelcomePanel(this);
+		m_aui->AddPane(g_welcome_panel, wxAuiPaneInfo().Name("welcome_panel").CenterPane().PaneBorder(false).Hide());
+	}
+
+	m_aui->SetFlags(m_aui->GetFlags() | wxAUI_MGR_TRANSPARENT_DRAG | wxAUI_MGR_LIVE_RESIZE);
+	
+	m_aui->Update();
+	
+	ZLINF("MainWindow","Initializing parser and toolchain...");	
+
+	parser = new Parser(this);
+	g_code_helper->AppendIndexes(config->Help.autocomp_indexes);
+	Autocoder::GetInstance(); // solo para que se cree
+	
+	compiler = new mxCompiler(/*compiler_tree.treeCtrl,compiler_tree.state,compiler_tree.errors,compiler_tree.warnings,compiler_tree.all*/);
+
+	parser_timer = new wxTimer(GetEventHandler(),mxID_PARSER_TIMER);
+	compiler->timer = new wxTimer(GetEventHandler(),mxID_COMPILER_TIMER);
+	find_replace_dialog = nullptr; // new mxFindDialog(this,wxID_ANY);
+	
+	ZLINF("MainWindow","Almost done with mxMainWindow...");	
+
+	current_after_events_action = call_after_events = nullptr;
+	after_events_timer = new wxTimer(GetEventHandler(),mxID_TIMER_AFTER_EVENTS);
+	
+	
+	SetDropTarget(new mxDropTarget(nullptr));
+	
+	m_aui->OnWelcomePanelShow();
+	
+	status_bar->SetStatusText(LANG(GENERAL_READY,"Listo"));
+	
+	Show(true); Maximize(config->Init.maximized);
+	
+	ZLINF("MainWindow","mxMainWindow construction finished...");	
+
+	// stuff that needs main_window setted to work
+	main_window = this;
+	
+}
+
+void mxMainWindow::OnSymbolTreeDec(wxCommandEvent &event) {
+	parser->OnGotoDec(notebook_sources);
+}
+
+void mxMainWindow::OnSymbolTreeDef(wxCommandEvent &event) {
+	parser->OnGotoDef(notebook_sources);
+}
+
+void mxMainWindow::OnSymbolTreePopup(wxTreeEvent &event) {
+	mxHidenPanelIgnoreGuard ignore_autohide;
+	parser->OnPopupMenu(event,notebook_sources);
+}
+
+void mxMainWindow::PopulateProjectFilePopupMenu(wxMenu &menu, project_file_item *fi, bool for_tab) {
+	if (!fi) mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_ADD_SELECTED));
+	if (fi) project_tree.selected_parent = project_tree.treeCtrl->GetItemParent(project_tree.selected_item);
+	if (!for_tab) mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_OPEN));
+	if (fi && !fi->IsInherited()) {
+		mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_RENAME));
+		mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_DELETE));
+	}
+	if (fi && fi->IsInherited()) {
+		if (fi->GetCategory()==FT_BLACKLIST)
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_REMOVE_FROM_BLACKLIST));
+		else {
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_ADD_SELECTED),LANG(MAINW_PROJECT_FILE_POPUP_ADD_TO_PROJECT_AS_OWN,"Agregar archivo al proyecto como propio"));
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_MOVE_TO_BLACKLIST));
+		}
+	}
+	if (fi) {
+		menu.AppendSeparator();
+		if (project_tree.selected_parent==project_tree.sources) {
+			wxMenuItem *item=menu.AppendCheckItem(mxID_PROJECT_POPUP_COMPILE_FIRST, LANG(MAINW_PROJECT_FILE_POPUP_COMPILE_FIRST,"Compilar &Primero"));
+			item->Enable(fi!=project->files.sources[0] && !compiler->IsCompiling()); item->Check(fi==project->files.sources[0]);
+			
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_COMPILE_NOW))->Enable(!compiler->IsCompiling());
+			if (fi->GetCategory()==FT_SOURCE) mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_COMPILING_OPTS))->Enable(!compiler->IsCompiling());
+		}
+		
+		mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_READONLY))->Check(fi->IsReadOnly());
+		if (fi->GetCategory()==FT_SOURCE||fi->GetCategory()==FT_HEADER) 
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_HIDE_SYMBOLS))->Check(!fi->AreSymbolsVisible());
+	}
+	menu.AppendSeparator();
+	if (!for_tab && fi) {
+		if (project_tree.selected_parent!=project_tree.sources)
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_MOVE_TO_SOURCES));
+		if (project_tree.selected_parent!=project_tree.headers)
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_MOVE_TO_HEADERS));
+		if (project_tree.selected_parent!=project_tree.others)
+			mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_MOVE_TO_OTHERS));
+		menu.AppendSeparator();
+	}
+	mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_OPEN_FOLDER));
+	mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_FILE_EXPLORE_FOLDER));
+	mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_PROPERTIES));
+}
+
+void mxMainWindow::OnProjectTreePopup(wxTreeEvent &event) {
+	
+	if (!project) {
+		wxMenu menu("");
+		menu.Append(mxID_EDIT_GOTO_FILE, LANG(MENUITEM_EDIT_FIND,"&Buscar..."));
+		project_tree.treeCtrl->PopupMenu(&menu,event.GetPoint());
+		return;
+	}
+	
+	mxHidenPanelIgnoreGuard ignore_autohide;
+	
+	// obtener informacion del item seleccionado
+	project_tree.selected_item = event.GetItem();
+	bool is_file = !(project_tree.selected_item==project_tree.sources || project_tree.selected_item==project_tree.headers || project_tree.selected_item==project_tree.others);
+	wxMenu menu("");
+	if (!is_file) {
+		project_tree.selected_parent=project_tree.selected_item;
+		menu.Append(mxID_PROJECT_POPUP_OPEN_ALL, LANG(MAINW_PROJECT_FILE_POPUP_OPEN_ALL,"Abrir &Todos"));
+		menu.Append(mxID_PROJECT_POPUP_ADD, LANG(MAINW_PROJECT_FILE_POPUP_ADD,"&Agregar Archivo..."));
+		menu.Append(mxID_PROJECT_POPUP_ADD_MULTI, LANG(MAINW_PROJECT_FILE_POPUP_ADD_MULTI,"&Agregar Múltiples Archivos..."));
+	} else {
+		PopulateProjectFilePopupMenu(menu,project->files.FindFromItem(project_tree.selected_item),false); // el if debería ser innecesario en este punto
+	}	
+	menu.AppendSeparator();
+	menu.AppendCheckItem(mxID_PROJECT_POPUP_TOGGLE_FULLPATH, LANG(MAINW_PROJECT_FILE_POPUP_TOGGLE_FULL_PATH_ON,"Mostrar rutas relativas completas"))
+		->Check(config->Init.fullpath_on_project_tree);
+	menu.Append(mxID_EDIT_GOTO_FILE, LANG(MENUITEM_EDIT_FIND,"&Buscar..."));
+	project_tree.treeCtrl->PopupMenu(&menu,event.GetPoint());
+}
+
+void mxMainWindow::OnCompilerTreePopup(wxTreeEvent &event) {
+	mxHidenPanelIgnoreGuard ignore_autohide;
+	wxMenu menu("");
+	menu.Append(mxID_COMPILER_POPUP_FULL, LANG(MAINW_OPEN_LAST_COMPILER_OUTPUT,"Abrir última salida"));
+	menu.AppendSeparator();
+	if (!current_toolchain.IsExtern())
+		menu.Append(mxID_COMPILER_POPUP_USTD,LANG(PREFERENCES_WRITING_BEAUTIFY_COMPILER_ERRORS,""
+												  "Simplificar mensajes de error del compilador")
+					)->Check(config->Init.beautify_compiler_errors);
+	project_tree.treeCtrl->PopupMenu(&menu);
+}
+
+void mxMainWindow::OnCompilerTreeToggleUnSTD(wxCommandEvent &event) {
+	config->Init.beautify_compiler_errors = !config->Init.beautify_compiler_errors;
+	mxMessageDialog(this,LANG(MAINW_REQUIRES_RECOMPILATION,"Los cambios tendrán efecto a partir de la próxima compilación")).IconInfo().ButtonsOk().Run();
+}
+
+void mxMainWindow::OnCompilerTreeShowFull(wxCommandEvent &event) {
+	ShowSpecilaUnnamedSource("<ultima_compilacion>",errors_manager->GetFullOutput());
+}
+
+void mxMainWindow::ShowSpecilaUnnamedSource(const wxString &tab_name, const wxArrayString &lines) {
+	if (config->Init.show_welcome) main_window->ShowWelcome(false);
+	mxSource* source = new mxSource(notebook_sources, AvoidDuplicatePageText(tab_name));
+	source->SetStyle(false);
+	for (unsigned int i=0;i<lines.GetCount();i++) source->AppendText(lines[i]+"\n");
+	notebook_sources->AddPage(source, tab_name ,true, *bitmaps->files.other);
+	if (!project) {
+		wxTreeItemId tree_item = project_tree.AddFile(tab_name,FT_OTHER);
+		source->SetTreeItem( tree_item );
+	}
+	source->SetModify(false);
+	source->SetReadOnlyMode(ROM_SPECIAL,true);
+	source->SetFocus();
+}
+
+void mxMainWindow::OnProjectTreeCompileFirst(wxCommandEvent &event) {
+	project->MoveFirst(project_tree.selected_item);
+}
+
+void mxMainWindow::OnProjectTreeToggleReadOnly(wxCommandEvent &event) {
+	project_file_item *item = project->files.FindFromItem(project_tree.selected_item);
+	if (item) project->SetFileReadOnly(item,!item->IsReadOnly());
+}
+
+void mxMainWindow::OnProjectTreeToggleHideSymbols(wxCommandEvent &event) {
+	project_file_item *item = project->files.FindFromItem(project_tree.selected_item);
+	if (item) project->SetFileHideSymbols(item,item->AreSymbolsVisible());
+}
+
+void mxMainWindow::OnProjectTreeCompileNow(wxCommandEvent &event) {
+	project_file_item *item = project->files.FindFromItem(project_tree.selected_item);
+	if (item) AuxCompileOne(item);
+}
+
+void mxMainWindow::OnProjectTreeCompilingOpts(wxCommandEvent &event) {
+	project_file_item *item = project->files.FindFromItem(project_tree.selected_item);
+	new mxBySourceCompilingOpts(this,item);
+}
+
+void mxMainWindow::AuxCompileOne(project_file_item *item) {
+	project->PrepareForBuilding(item);
+	status_bar->SetStatusText(LANG(MAINW_COMPILING_DOTS,"Compilando..."));
+	errors_manager->Reset(true);
+	wxString current;
+	project->compile_startup_time = time(nullptr);
+	compile_and_run_struct_single *compile_and_run=new compile_and_run_struct_single("OnProjectTreeCompileNow");
+	compile_and_run->pid = project->CompileNext(compile_and_run, current);
+	StartExecutionStuff(compile_and_run,current);
+}
+
+void mxMainWindow::OnProjectTreeOpen(wxCommandEvent &event) {
+	for (int i=0,j=notebook_sources->GetPageCount();i<j;i++)
+		if (((mxSource*)(notebook_sources->GetPage(i)))->GetTreeItem()==project_tree.selected_item) {
+			notebook_sources->SetSelection(i);
+			return;
+		}
+	if (project) {
+		if (!OpenFile(project->GetNameFromItem(project_tree.selected_item),false)) {
+			mxMessageDialog(main_window,wxString()<<LANG(MAINW_FILE_NOT_FOUND,"No se encontro el archivo:")<<"\n"<<project->GetNameFromItem(project_tree.selected_item))
+				.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+		}
+	}
+}
+
+void mxMainWindow::OnProjectTreeOpenAll(wxCommandEvent &event) {
+	wxTreeItemIdValue cookie;
+	wxTreeItemId item = project_tree.treeCtrl->GetFirstChild(project_tree.selected_item,cookie);
+	while ( item.IsOk() ) {
+		SetStatusText(wxString(LANG(MAINW_OPENING,"Abriendo"))<<" \""<<project_tree.treeCtrl->GetItemText(item)<<"\"...");
+		project_tree.selected_item = item;
+		OnProjectTreeOpen(event);
+		item = project_tree.treeCtrl->GetNextSibling( item );
+	}
+	SetStatusText(LANG(GENERAL_READY,"Listo"));
+}
+
+void mxMainWindow::OnProjectTreeRename(wxCommandEvent &event) {
+	wxFileName fn(DIR_PLUS_FILE(project->path,project->GetNameFromItem(project_tree.selected_item,true)));
+	wxFileDialog dlg (this, "Renombrar",fn.GetPath(),fn.GetFullName(), "Any file (*)|*", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+	dlg.SetDirectory(fn.GetPath());
+	dlg.SetWildcard("Todos los archivos|" WILDCARD_ALL "|Archivos de C/C++|" WILDCARD_CPP "|Fuentes|" WILDCARD_SOURCE "|Cabeceras|" WILDCARD_HEADER);
+	if (dlg.ShowModal() == wxID_OK) {
+		if (!project->RenameFile(project_tree.selected_item,dlg.GetPath())) {
+			mxMessageDialog(main_window,LANG(MAINW_PROBLEM_RENAMING,"No se pudo renombrar el archivo"))
+				.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+		}
+	}
+}
+
+void mxMainWindow::OnProjectTreeDelete(wxCommandEvent &event) {
+	project->DeleteFile(project_tree.selected_item);
+}
+
+void mxMainWindow::OnProjectTreeMoveToSources(wxCommandEvent &event) {
+	project->MoveFile(project_tree.selected_item,FT_SOURCE);
+}
+
+void mxMainWindow::OnProjectTreeMoveToBlacklist(wxCommandEvent &event) {
+	project->MoveFile(project_tree.selected_item,FT_BLACKLIST);
+}
+
+void mxMainWindow::OnProjectTreeRemoveFromBlacklist(wxCommandEvent &event) {
+	project->MoveFile(project_tree.selected_item,FT_NULL);
+}
+
+void mxMainWindow::OnProjectTreeMoveToHeaders(wxCommandEvent &event) {
+	project->MoveFile(project_tree.selected_item,FT_HEADER);
+}
+
+void mxMainWindow::OnProjectTreeMoveToOthers(wxCommandEvent &event) {
+	project->MoveFile(project_tree.selected_item,FT_OTHER);
+}
+
+void mxMainWindow::OnProjectTreeAddMultiple(wxCommandEvent &event) {
+	new mxMultipleFileChooser();
+}
+
+void mxMainWindow::OnProjectTreeAddSelected(wxCommandEvent &event) {
+	if (project_tree.selected_item.IsOk()) {
+		project->SetFileAsOwn( project->files.FindFromItem(project_tree.selected_item) );
+	} else {
+		mxSource *src=CURRENT_SOURCE;
+		OpenFile(src->source_filename.GetFullPath(),true);
+	}
+}
+
+void mxMainWindow::OnProjectTreeAdd(wxCommandEvent &event) {
+	wxFileDialog dlg (this, "Abrir Archivo", project?project->last_dir:config->Files.last_dir, " ", "Any file (*)|*", wxFD_OPEN | wxFD_MULTIPLE);
+	dlg.SetWildcard("Archivos de C/C++|" WILDCARD_CPP "|Fuentes|" WILDCARD_SOURCE "|Cabeceras|" WILDCARD_HEADER "|Todos los archivos|*");
+	if (project_tree.selected_parent==project_tree.sources)
+		dlg.SetFilterIndex(1);
+	else if (project_tree.selected_parent==project_tree.headers)
+		dlg.SetFilterIndex(2);
+	else if (project_tree.selected_parent==project_tree.others)
+		dlg.SetFilterIndex(3);
+	if (dlg.ShowModal() == wxID_OK) {
+		if (project)
+			project->last_dir=dlg.GetDirectory();
+		else
+			config->Files.last_dir=dlg.GetDirectory();
+		wxArrayString paths;
+		dlg.GetPaths(paths);
+		int multiple=1; // 1 en OpenFileFromGui significa always_attach
+		for (unsigned int i=0;i<paths.GetCount();i++) {
+			if (!wxFileName::FileExists(dlg.GetPath())) {
+				if ( mxMessageDialog(main_window,LANG(MAINW_CREATE_FILE_QUESTION,"El archivo no existe, desea crearlo?"))
+						.Title(dlg.GetPath()).ButtonsYesNo().Run().yes) 
+				{
+					wxTextFile fil(dlg.GetPath());
+					fil.Create();
+					fil.Write();
+				} else
+					continue;
+			}
+			OpenFileFromGui(paths[i],&multiple);
+		}
+	}
+}
+
+void mxMainWindow::OnClose (wxCloseEvent &event) {
+	if (debug->IsDebugging()) {
+		debug->Stop();
+		return;
+	}
+	if (parser->working) {
+		parser->Stop(true);
+	}
+	bool do_save_project = project && config->Init.save_project;
+	if (project && !do_save_project) {
+		mxMessageDialog::mdAns pres 
+			= mxMessageDialog(main_window,LANG(MAINW_SAVE_PROJECT_BEFORE_CLOSING,""
+											   "Desea guardar los cambios del proyecto antes de cerrarlo?"))
+				.Title(project->GetFileName()).ButtonsYesNoCancel().IconQuestion()
+				.Check1(LANG(MAINW_ALWAYS_SAVE_PROJECT_ON_CLOSE,"Guardar cambios siempre al cerrar un proyecto"),false)
+				.Run();
+		do_save_project = (pres.yes);
+		if (pres.cancel) return;
+		if (pres.check1) config->Init.save_project=true;
+	}
+	if (IsMaximized()) {
+		config->Init.maximized=true;
+	} else if (!IsIconized()) { 
+		config->Init.pos_x=GetPosition().x;
+		config->Init.pos_y=GetPosition().y;
+		config->Init.size_x=GetSize().GetWidth();
+		config->Init.size_y=GetSize().GetHeight();
+		config->Init.maximized=false;
+	}
+	GetToolbarsPositions();
+	IF_THERE_IS_SOURCE {
+		for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+			mxSource *source = (mxSource*)(notebook_sources->GetPage(i));
+			if (source->GetModify()) {
+				notebook_sources->SetSelection(i);
+				mxMessageDialog::mdAns res 
+					= mxMessageDialog(main_window,LANG(MAINW_SAVE_CHANGES_BEFORE_EXIT_QUESTION,""
+													   "Hay cambios sin guardar. Desea guardarlos antes de salir?"))
+						.Title(source->page_text).ButtonsYesNoCancel().IconQuestion().Run();
+				if (res.yes) {
+					if (!source->sin_titulo) {
+						source->SaveSource();
+					} else {
+						wxCommandEvent evt;
+						OnFileSaveAs(evt);
+					}
+				}
+				if (res.cancel || (res.yes && source->sin_titulo) )
+					return;
+			}
+		}
+	}
+	if (do_save_project) project->Save();
+	config->Init.show_beginner_panel=_menu_item(mxID_VIEW_BEGINNER_PANEL)->IsChecked();
+	config->Init.show_minimap_panel=_menu_item(mxID_VIEW_MINIMAP)->IsChecked();
+	config->Save();
+	while (notebook_sources->GetPageCount()) notebook_sources->DeletePage(0); // close sources to avoid paint events and other calls that could use some just deleted objects
+	if (g_share_manager) delete g_share_manager;
+#ifdef __APPLE__
+	m_aui->GetPane(_get_toolbar(tbFIND)).Hide();
+	m_aui->Update(); wxYield();
+#endif
+	main_window=nullptr;
+	er_uninit();
+	wxExit();
+}
+
+void mxMainWindow::OnEditFind (wxCommandEvent &event) {
+	if (!find_replace_dialog) find_replace_dialog = new mxFindDialog(this,wxID_ANY);
+	IF_THERE_IS_SOURCE {
+		find_replace_dialog->ShowFind(CURRENT_SOURCE);
+	} else
+		find_replace_dialog->ShowFind(nullptr);
+	return;
+}
+
+void mxMainWindow::OnEditFindNext (wxCommandEvent &event) {
+	_record_this_action_in_macro(event.GetId());
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->HideCalltip();
+	if (!find_replace_dialog) find_replace_dialog = new mxFindDialog(this,wxID_ANY);
+	if (find_replace_dialog->last_search.Len()) {
+		if (!find_replace_dialog->FindNext()) {
+			mxMessageDialog(main_window,LANG1(FIND_NOT_FOUND,"La cadena \"<{1}>\" no se encontro.",find_replace_dialog->last_search))
+				.Title(LANG(FIND_CAPTION,"Buscar")).IconInfo().Run();
+		}
+	} else {
+		OnEditFind(event);
+	}
+}
+
+void mxMainWindow::OnEditFindPrev (wxCommandEvent &event) {
+	_record_this_action_in_macro(event.GetId());
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->HideCalltip();
+	if (!find_replace_dialog) find_replace_dialog = new mxFindDialog(this,wxID_ANY);
+	if (find_replace_dialog->last_search.Len()) {
+		if (!find_replace_dialog->FindPrev()) {
+			mxMessageDialog(main_window,LANG1(FIND_NOT_FOUND,"La cadena \"<{1}>\" no se encontro.",find_replace_dialog->last_search))
+				.Title(LANG(FIND_CAPTION,"Buscar")).IconInfo().Run();
+		}
+	} else {
+		OnEditFind(event);
+	}
+}
+
+void mxMainWindow::OnEditReplace (wxCommandEvent &event) {
+	if (!find_replace_dialog) find_replace_dialog = new mxFindDialog(this,wxID_ANY);
+	IF_THERE_IS_SOURCE {
+		find_replace_dialog->ShowReplace(CURRENT_SOURCE);
+	} else
+		find_replace_dialog->ShowReplace(nullptr);
+	return;
+}
+
+void mxMainWindow::OnEditGoto (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		new mxGotoLineWindow(CURRENT_SOURCE,this,wxID_ANY);
+	}
+}
+
+void mxMainWindow::OnEditGotoFunction (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source=CURRENT_SOURCE;
+		int pos=source->GetCurrentPos();
+		int s=source->WordStartPosition(pos,true);
+		int e=source->WordEndPosition(pos,true);
+		wxString key = source->GetTextRange(s,e);
+		new mxGotoFunctionDialog(key,this);
+	} else
+		new mxGotoFunctionDialog("",this);
+}
+
+void mxMainWindow::OnEditGotoFile (wxCommandEvent &event) {
+	new mxGotoFileDialog("",this);
+}
+
+void mxMainWindow::OnQuickHelpLink (wxHtmlLinkEvent &event) {
+	wxString action(event.GetLinkInfo().GetHref().BeforeFirst(':')), post=event.GetLinkInfo().GetHref().AfterFirst(':');
+	if (action=="quickhelp")
+		quick_help->SetPage(g_help->GetQuickHelp( post ));
+	else if (action=="doxygen")
+		mxUT::OpenInBrowser(wxString("file://")<<post);
+	else if (action=="cppreference")
+		mxReferenceWindow::ShowAndSearch( post );
+	else if (action=="gotoline") {
+		wxString the_one=post.BeforeLast(':');
+		long int line;
+		event.GetLinkInfo().GetHref().AfterLast(':').ToLong(&line);
+		for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+			mxSource *src =((mxSource*)(notebook_sources->GetPage(i)));
+			if ((!src->sin_titulo && src->source_filename==the_one) || 
+				(src->sin_titulo && src->page_text==the_one) ||
+				(src->temp_filename==the_one && src==parser->source)
+				) {
+				notebook_sources->SetSelection(i);
+				CURRENT_SOURCE->MarkError(line-1);
+				return;
+			}
+		}
+		// si no esta abierto
+		//		if (mxMD_YEW == mxMessageDialog(main_window,wxString("El archivo ")<<the_one.GetFullName()<<" no esta cargado. Desea cargarlo?", the_one.GetFullPath(), mxMD_YES_NO|mxMD_QUESTION).ShowModal();
+		mxSource *src=OpenFile(the_one);
+		if (src && src!=EXTERNAL_SOURCE) src->MarkError(line-1);
+	} else if (action=="gotopos") { // not used anymore?
+		mxSource *source=nullptr;
+		wxString the_one=post.BeforeLast(':').BeforeLast(':');
+		long int p1=0,p2=0;
+		event.GetLinkInfo().GetHref().BeforeLast(':').AfterLast(':').ToLong(&p1);
+		event.GetLinkInfo().GetHref().AfterLast(':').ToLong(&p2);
+		for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+			mxSource *src = ((mxSource*)(notebook_sources->GetPage(i)));
+			if ((!src->sin_titulo && src->source_filename==the_one) || (src->sin_titulo && src->page_text==the_one)) {
+				notebook_sources->SetSelection(i);
+				source=CURRENT_SOURCE;
+				break;
+			}
+		}
+		// si no esta abierto
+		//		if (mxMD_YEW == mxMessageDialog(main_window,wxString("El archivo ")<<the_one.GetFullName()<<" no esta cargado. Desea cargarlo?", the_one.GetFullPath(), mxMD_YES_NO|mxMD_QUESTION).ShowModal();
+		if (!source) source = OpenFile(the_one);
+		if (source && source!=EXTERNAL_SOURCE) {
+			int line=source->LineFromPosition(p1);
+			source->MarkError(line-1);
+			source->SetSelection(p1,p1+p2);
+		}
+	} else if (action=="gotolinepos") {
+		mxSource *source=nullptr;
+		wxString the_one=post.BeforeLast(':').BeforeLast(':').BeforeLast(':');
+		long int p1=0,p2=0,line=0;
+		event.GetLinkInfo().GetHref().BeforeLast(':').BeforeLast(':').AfterLast(':').ToLong(&line);
+		event.GetLinkInfo().GetHref().BeforeLast(':').AfterLast(':').ToLong(&p1);
+		event.GetLinkInfo().GetHref().AfterLast(':').ToLong(&p2);
+		for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+			mxSource *src = ((mxSource*)(notebook_sources->GetPage(i)));
+			if ((src->source_filename==the_one && !src->sin_titulo) || (src->sin_titulo && src->page_text==the_one)) {
+				notebook_sources->SetSelection(i);
+				source=CURRENT_SOURCE;
+				break;
+			}
+		}
+		// si no esta abierto
+		//		if (mxMD_YEW == mxMessageDialog(main_window,wxString("El archivo ")<<the_one.GetFullName()<<" no esta cargado. Desea cargarlo?", the_one.GetFullPath(), mxMD_YES_NO|mxMD_QUESTION).ShowModal();
+		if (!source) source = OpenFile(the_one);
+		if (source && source!=EXTERNAL_SOURCE) {
+			p1+=source->PositionFromLine(line);
+			source->MarkError(line-1);
+			source->SetSelection(p1,p1+p2);
+		}
+	} else
+		event.Skip();
+}
+
+/// @brief evento generico para el doble click en cualquier arbol, desde aqui se llama al que corresponda
+void mxMainWindow::OnSelectTreeItem (wxTreeEvent &event){
+//DEBUG_INFO("wxYield:in  mxMainWindow::OnSelectTreeItem");
+//	wxYield(); /// para que estaba este yield??
+//DEBUG_INFO("wxYield:out mxMainWindow::OnSelectTreeItem");
+	if (event.GetEventObject()==project_tree.treeCtrl)
+		OnSelectSource(event);
+	else if (event.GetEventObject()==compiler_tree.treeCtrl)
+		OnSelectError(event);
+	else if (event.GetEventObject()==symbols_tree.treeCtrl) {
+		parser->OnSelectSymbol(event,notebook_sources);
+#ifdef __WIN32__
+		SetFocusToSourceAfterEvents();
+#endif
+	} else if (event.GetEventObject()==explorer_tree.treeCtrl)
+		OnSelectExplorerItem(event);
+//	evt.Skip();
+}
+
+void mxMainWindow::OnSelectSource (wxTreeEvent &event){
+	wxTreeItemId item=event.GetItem();
+	for (int i=0,j=notebook_sources->GetPageCount();i<j;i++)
+		if (((mxSource*)(notebook_sources->GetPage(i)))->GetTreeItem()==item) {
+			notebook_sources->SetSelection(i);
+#ifdef __WIN32__
+			SetFocusToSourceAfterEvents();
+#endif
+			return;
+		}
+	if (project) {
+		if (item==project_tree.headers||item==project_tree.sources||item==project_tree.others) {
+			event.Skip(); return;
+		}
+		mxSource *source = OpenFile(project->GetNameFromItem(item),false);
+		if (!source) {
+			mxMessageDialog(main_window,wxString()<<LANG(MAINW_FILE_NOT_FOUND,"No se encontro el archivo:")<<"\n"<<project->GetNameFromItem(item))
+				.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+		} else if (source!=EXTERNAL_SOURCE) {
+			// el if de abajo se comento porque el "source->SetStyle(false)" ya estaba comentado, y lo del menu esta en OnNotebookPageChanged
+//			if (source && project_tree.treeCtrl->GetItemParent(item)==project_tree.others)
+				//source->SetStyle(false);
+//				_menu_item(mxID_VIEW_CODE_STYLE)->Check(false);
+#ifdef __WIN32__
+			SetFocusToSourceAfterEvents();
+#endif
+		}
+	}
+}
+
+#define EN_COMPOUT_FILE_NOT_RECOGNIZED ".o: file not recognized"
+#define EN_COMPOUT_EXE_RUNNING_PRE "ld.exe: cannot open output file"
+#define EN_COMPOUT_EXE_RUNNING_POST ".exe: Permissino denied"
+
+void mxMainWindow::OnSelectError (wxTreeEvent &event) {
+	NavigationHistory::MaskGuard nhg;
+	// ver si es alguno de los mensajes de zinjai
+	wxString item_text=(compiler_tree.treeCtrl->GetItemText(event.GetItem()));
+	if (item_text==LANG(MAINW_WARNING_NO_EXCUTABLE_PERMISSION,"El binario no tiene permisos de ejecución.")) {
+		LoadInQuickHelpPanel(DIR_PLUS_FILE(config->Help.guihelp_dir,"zerror_noexecperm.html"),false); return;
+	} else if (item_text.EndsWith(LANG(PROJMNGR_FUTURE_SOURCE_POST," tenia fecha de modificación en el futuro. Se reemplazo por la fecha actual."))) {
+		LoadInQuickHelpPanel(DIR_PLUS_FILE(config->Help.guihelp_dir,"zerror_futuretimestamp.html"),false); return;
+	} else if (item_text==LANG(PROJMNGR_MANIFEST_NOT_FOUND,"No se ha encontrado el archivo manifest.xml.")) {
+		LoadInQuickHelpPanel(DIR_PLUS_FILE(config->Help.guihelp_dir,"zerror_missingiconmanifest.html"),false); return;
+	} else if (project && item_text.StartsWith(LANG(MAINW_COMPILATION_CUSTOM_STEP_ERROR,"Error al ejecutar paso de compilación personalizado: "))) {
+		int n = wxString(LANG(MAINW_COMPILATION_CUSTOM_STEP_ERROR,"Error al ejecutar paso de compilación personalizado: ")).Len();
+		wxString custom_step_name = item_text.Mid(n); 
+		mxProjectConfigWindow *pwin = new mxProjectConfigWindow(this);
+		pwin->SelectCustomStep(custom_step_name);
+	} else if (item_text.StartsWith(EN_COMPOUT_EXE_RUNNING_PRE) && item_text.StartsWith(EN_COMPOUT_EXE_RUNNING_POST)) {
+		LoadInQuickHelpPanel(DIR_PLUS_FILE(config->Help.guihelp_dir,"zerror_cannotopenoutputfile.html"),false); return;
+	} else if (item_text.Contains(EN_COMPOUT_FILE_NOT_RECOGNIZED)) {
+		wxString obj_name = item_text.Mid(0,item_text.Find(EN_COMPOUT_FILE_NOT_RECOGNIZED)+2);
+		if (obj_name.Contains("ld: ")) obj_name = obj_name.AfterFirst(' ');
+		LocalListIterator<project_file_item*> fi(&project->files.sources);
+		while(fi.IsValid()) {
+#warning VER SI ANTES ERA SOLO EL NOMBRE DEL OBJ
+/// C:\Program Files (x86)\ZinjaI\src\..\temp\zinjai\debug.w32\mxIconInstaller.o: file not recognized: File format not recognized
+				
+			wxString bin_name = fi->GetBinName(project->GetTempFolder(false));
+			if (obj_name == bin_name) {
+				mxMessageDialog::mdAns ans = 
+					mxMessageDialog(main_window,LANG1(MAINW_SAVE_LINK_ERROR_TRUNCATED_FILE,""
+													  "Este error puede deberse a compilaciones interrumpidas, o a la presencia\n"
+													  "de objetos compilados en otros sistemas. Si este fuera el caso, podría\n"
+													  "solucionarse simplemente recompilando el fuente asociado. ¿Desea recompilar\n"
+													  "\"<{1}>\" ahora?",fi->GetRelativePath()))
+						.Title(fi->GetRelativePath()).ButtonsYesNo().IconQuestion().Run();
+				if (ans.yes) { AuxCompileOne(*fi); return; }
+				break;
+			}
+			fi.Next();
+		}
+	}
+	// ver que dijo el compilador
+	ZLINF("MainWindow","OnSelectError wxYield:in");
+	wxYield();
+	ZLINF("MainWindow","OnSelectError wxYield:out");
+	mxCompilerItemData *comp_data = (mxCompilerItemData*)(compiler_tree.treeCtrl->GetItemData(event.GetItem()));
+	wxString error_message = comp_data ? comp_data->file_info : "";
+	if (!error_message.Len()) error_message = compiler_tree.treeCtrl->GetItemText(event.GetItem());
+	wxTreeItemIdValue cookie;
+	wxTreeItemId first_child = compiler_tree.treeCtrl->GetFirstChild(event.GetItem(),cookie);
+	wxString first_child_message = first_child.IsOk() ? compiler_tree.treeCtrl->GetItemText(first_child):"";
+	if (error_message.Len()) OnSelectErrorCommon(error_message,first_child_message);
+}
+
+void mxMainWindow::OnFileOpenH(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		if (source->sin_titulo) return;
+		wxString the_one(mxUT::GetComplementaryFile(source->source_filename));
+		if (the_one.Len()) OpenFile(the_one);
+	}
+}
+
+void mxMainWindow::OnFileOpenSelected(wxCommandEvent &event){
+	IF_THERE_IS_SOURCE {
+		
+		mxSource *source=CURRENT_SOURCE;
+		int p1=source->GetSelectionStart();
+		int p2=source->GetSelectionEnd();
+		if (p1==p2) {
+			int pos=source->GetCurrentPos();
+			p1=source->WordStartPosition(pos,true);
+			p2=source->WordEndPosition(pos,true);
+			while ((source->GetStyleAt(p1-1)==wxSTC_C_STRING&&source->GetCharAt(p1-1)!='\"') || source->GetCharAt(p1-1)=='.' || source->GetCharAt(p1-1)=='/' || source->GetCharAt(p1-1)=='\\' || source->GetCharAt(p1-1)==':' || source->GetCharAt(p1-1)=='-' || source->GetCharAt(p1-1)=='_')
+				p1=source->WordStartPosition(p1-1,true);
+			while ((source->GetStyleAt(p2)==wxSTC_C_STRING&&source->GetCharAt(p2)!='\"') ||source->GetCharAt(p2)=='.' || source->GetCharAt(p2)=='/' || source->GetCharAt(p2)=='\\' || source->GetCharAt(p2)==':' || source->GetCharAt(p2)=='-' || source->GetCharAt(p2)=='_')
+				p2=source->WordEndPosition(p2+1,true);
+		}
+		wxString base_path;
+		if (source->GetStyleAt((p1+p2)/2)==wxSTC_C_PREPROCESSOR) {
+			base_path=source->GetPath();
+		} else {
+			if (project)
+				base_path=project->path;
+			else
+				base_path=source->working_folder.GetFullPath();
+		}
+		wxString fname=source->GetTextRange(p1,p2);
+		if (source->GetStyleAt(p1-1)==wxSTC_C_STRING) fname.Replace("\\\\","\\");
+		wxFileName the_one (DIR_PLUS_FILE(base_path,fname));
+		if (wxFileName::FileExists(the_one.GetFullPath()))
+			OpenFile(the_one.GetFullPath());
+		else 
+			new mxGotoFileDialog(source->GetTextRange(p1,p2),this);
+		
+	}
+}
+
+void mxMainWindow::OnHelpOpinion (wxCommandEvent &event){
+	mxUT::OpenZinjaiSite("contacto.php");
+//	new mxOpinionWindow(this);
+}
+
+void mxMainWindow::OnHelpTutorial (wxCommandEvent &event){
+	mxHelpWindow::ShowHelp("tutorials.html");
+}
+
+void mxMainWindow::OnHelpAbout (wxCommandEvent &event){
+	new mxAboutWindow(this);
+}
+
+void mxMainWindow::OnHelpGui (wxCommandEvent &event){
+	mxHelpWindow::ShowHelp();
+}
+
+void mxMainWindow::OnHelpTip (wxCommandEvent &event){
+	new mxTipsWindow(this, wxID_ANY, wxDefaultPosition, wxSize(500, 300));
+}
+
+void mxMainWindow::OnHelpCpp (wxCommandEvent &event) {
+	mxReferenceWindow::ShowPage();
+}
+
+void mxMainWindow::OnHelpCode (wxCommandEvent &event) {
+	wxString key;
+	IF_THERE_IS_SOURCE { // si hay fuente abierto
+		mxSource *source=CURRENT_SOURCE;
+		int pos=source->GetCurrentPos(); // buscar la palabra sobre el cursor
+		key = source->GetCurrentKeyword(pos);
+		if (key.StartsWith("#")) {
+			mxReferenceWindow::ShowAndSearch("Preprocessor");
+			return;
+		}
+		int s=source->GetStyleAt(pos);
+		if (s==wxSTC_C_WORD||s==wxSTC_C_WORD2) {
+			mxReferenceWindow::ShowAndSearch(key);
+			return;
+		}
+	}
+	if (!key.Len()) // si no hay clave, preguntar
+		key = mxGetTextFromUser(LANG(QUICKHELP_WORDS_TO_SEARCH,"Palabra a buscar:"), LANG(CAPTION_QUICKHELP,"Ayuda Rapida") , "", this);
+	if (key=="Zaskar") {
+		new mxSplashScreen(zskr,GetPosition().x+GetSize().x/2-100,GetPosition().y+GetSize().y/2-150);
+		wxString s("Hola, este soy yo... Pablo Novara, alias Zaskar... ;).");
+		ShowInQuickHelpPanel(s);
+	} else if (key.Len())
+		ShowQuickHelp(key); // buscar en la ayuda y mostrar
+}
+
+
+void mxMainWindow::OnNotebookPageChanged(wxAuiNotebookEvent& event) {
+	
+	static wxMenuItem *menu_view_white_space=_menu_item(mxID_VIEW_WHITE_SPACE);
+	static wxMenuItem *menu_view_line_wrap=_menu_item(mxID_VIEW_LINE_WRAP);
+	static wxMenuItem *menu_view_code_style=_menu_item(mxID_VIEW_CODE_STYLE);
+	
+	if (mxDiffSideBar::HaveInstance()) mxDiffSideBar::GetInstance().Refresh();
+	int old_sel = event.GetOldSelection();
+	if (old_sel!=-1) {
+		mxSource *old_source = (mxSource*)notebook_sources->GetPage(old_sel);
+		if (old_source) old_source->HideCalltip();
+	}
+	menu_view_white_space->Check(CURRENT_SOURCE->config_source.whiteSpace);
+	menu_view_line_wrap->Check(CURRENT_SOURCE->config_source.wrapMode);
+	menu_view_code_style->Check(CURRENT_SOURCE->config_source.syntaxEnable);
+	if (!project) parser_timer->Start(2000,true);
+	mxSource *new_src = CURRENT_SOURCE;
+	new_src->ReloadErrorsList();
+	if (m_minimap) m_minimap->SetCurrentSource(new_src);
+	event.Veto();
+	
+}
+
+void mxMainWindow::OnNotebookRightClick(wxAuiNotebookEvent& event) {
+	// obtener informacion del item seleccionado
+	mxSource *src=((mxSource*)notebook_sources->GetPage(event.GetSelection()));
+	notebook_sources->SetSelection(notebook_sources->GetPageIndex(src));
+	wxMenu menu("");
+	if (project) {
+		project_file_item *fi = project->files.FindFromItem(src->GetTreeItem());
+		if (fi) {
+			// seleccionarlo en el arbol de proyecto
+			project_tree.Select(src->GetTreeItem());
+			// colocar las opciones comunes al popup del arbol de proyecto
+			PopulateProjectFilePopupMenu(menu,fi,true);
+		} else {
+			project_tree.ClearSelection();
+			PopulateProjectFilePopupMenu(menu,nullptr,true);
+		}
+		menu.AppendSeparator();
+	}
+	if (!src->sin_titulo) { 
+		wxString comp = mxUT::GetComplementaryFile(src->source_filename); 
+		if (comp.Len()) menu.Append(mxID_FILE_OPEN_H, LANG1(MAINW_OPEN_FILENAME,"Abrir \"<{1}>\"",comp));
+		mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_OPEN_FOLDER));
+		mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_FILE_EXPLORE_FOLDER));
+		mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_PROJECT_POPUP_PROPERTIES));
+		menu.AppendSeparator();
+	}
+	
+	/*wxMenuItem *shared = */mxUT::AddItemToMenu(&menu,_menu_item_2(mnTOOLS,mxID_TOOLS_SHARE_SHARE));
+//	shared->Check(g_share_manager && g_share_manager->Exists(src));
+		
+	mxUT::AddItemToMenu(&menu,_menu_item_2(mnVIEW,mxID_VIEW_DUPLICATE_TAB));
+	if (!project) menu.AppendCheckItem(mxID_FILE_SET_AS_MASTER, LANG(MENUITEM_FILE_SET_AS_MASTER,"Ejecutar siempre este fuente"))->Check(src==master_source);
+	mxUT::AddItemToMenu(&menu,_menu_item_2(mnFILE,mxID_FILE_SAVE));
+	if (!project) mxUT::AddItemToMenu(&menu,_menu_item_2(mnFILE,mxID_FILE_SAVE_AS));
+	mxUT::AddItemToMenu(&menu,_menu_item_2(mnFILE,mxID_FILE_RELOAD));
+	mxUT::AddItemToMenu(&menu,_menu_item_2(mnFILE,mxID_FILE_CLOSE));
+	if (notebook_sources->GetPageCount()>1)
+		mxUT::AddItemToMenu(&menu,_menu_item_2(mnHIDDEN,mxID_FILE_CLOSE_ALL_BUT_ONE));
+	notebook_sources->PopupMenu(&menu);
+}
+
+void mxMainWindow::OnNotebookPageClose(wxAuiNotebookEvent& event) {
+	mxSource *source = (mxSource*)notebook_sources->GetPage(event.GetSelection());
+	if (source->GetModify() && source->next_source_with_same_file==source) {
+		mxMessageDialog::mdAns res =
+			mxMessageDialog(main_window,LANG(MAINW_SAVE_CHANGES_BEFORE_CLOSING_QUESTION,""
+											 "Hay cambios sin guardar. Desea guardarlos antes de cerrar el archivo?"))
+				.Title(source->page_text).ButtonsYesNoCancel().IconQuestion().Run();
+		if (res.cancel) {
+			event.Veto();
+			return;
+		}
+		if (res.yes) {
+			if (source->sin_titulo) {
+				wxCommandEvent evt;
+				OnFileSaveAs(evt);
+				if (source->GetModify()) {
+					event.Veto();
+					return;
+				}
+			} else
+				source->SaveSource();
+		}
+	}
+	if (!project) {
+		if (source->next_source_with_same_file==source) project_tree.treeCtrl->Delete(source->GetTreeItem());
+	} else {
+		source->UpdateExtras(); // done in mxSource's destructor
+	}
+	if (g_share_manager && g_share_manager->Exists(source))  {
+		mxMessageDialog::mdAns ans =
+			mxMessageDialog(main_window,LANG(MAINW_ASK_CLOSE_SHARED,""
+											 "El archivo esta siendo compartido con modificaciones.\n"
+											 "Si lo cierra dejara de estar disponible.\n"
+											 "¿Realmente desea cerrar el archivo?"))
+				.Check1(LANG(MAINW_SHARE_AFTER_CLOSE,"Continuar compartiendo (\"sin modificaciones\") despues de cerrarlo."),false)
+				.Title(source->page_text).ButtonsYesNo().Run();
+		if (ans.yes) {
+			if (ans.check1)
+				g_share_manager->Freeze(source);
+			else
+				g_share_manager->Delete(source);
+		} else {
+			event.Veto();
+			return;
+		}
+	}
+	if (!project)
+		parser->RemoveFile(source->GetFullPath());
+	else
+		parser->ParseIfUpdated(source->source_filename);
+//	debug->OnSourceClosed(source); // supuestamente lo hace el destructor de mxSource llamando a debug->UnregisterSource
+	if (!project && g_welcome_panel && notebook_sources->GetPageCount()==1)
+		ShowWelcome(true);
+}
+
+
+void mxMainWindow::OnPaneClose(wxAuiManagerEvent& event) {
+	if (m_aui->OnPaneClose(event.pane->window)) return;
+	else if (event.pane->name == "toolbar_misc") { _menu_item(mxID_VIEW_TOOLBAR_MISC)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbMISC)=false; }
+	else if (event.pane->name == "toolbar_find") { _menu_item(mxID_VIEW_TOOLBAR_FIND)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbFIND)=false; }
+	else if (event.pane->name == "toolbar_view") { _menu_item(mxID_VIEW_TOOLBAR_VIEW)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbVIEW)=false; }
+	else if (event.pane->name == "toolbar_project") { _menu_item(mxID_VIEW_TOOLBAR_PROJECT)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbPROJECT)=false; }
+	else if (event.pane->name == "toolbar_tools") { _menu_item(mxID_VIEW_TOOLBAR_TOOLS)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbTOOLS)=false; }
+	else if (event.pane->name == "toolbar_file") { _menu_item(mxID_VIEW_TOOLBAR_FILE)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbFILE)=false; }
+	else if (event.pane->name == "toolbar_edit") { _menu_item(mxID_VIEW_TOOLBAR_EDIT)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbEDIT)=false; }
+	else if (event.pane->name == "toolbar_run") { _menu_item(mxID_VIEW_TOOLBAR_RUN)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbRUN)=false; }
+	else if (event.pane->name == "toolbar_debug") { _menu_item(mxID_VIEW_TOOLBAR_DEBUG)->Check(false); if (!gui_debug_mode && !gui_fullscreen_mode) _toolbar_visible(tbDEBUG)=false; }
+//	else if (event.pane->name == "backtrace") debug->backtrace_visible=false;
+	
+}
+
+
+void mxMainWindow::OnExit(wxCommandEvent &event) {
+    Close(true);
+}
+
+
+mxMainWindow::~mxMainWindow() {
+	main_window=nullptr;
+    m_aui->UnInit();
+}
+
+
+void mxMainWindow::OnEdit (wxCommandEvent &event) {
+	_record_this_action_in_macro(event.GetId());
+	IF_THERE_IS_SOURCE {
+		CURRENT_SOURCE->ProcessEvent(event);
+		CURRENT_SOURCE->SetFocus();
+	}
+}
+
+void mxMainWindow::OnEditNeedFocus (wxCommandEvent &event) {
+//#warning usar esto para las demas acciones de edicion que tambien tengan atajos compartidos
+	_record_this_action_in_macro(event.GetId());
+	wxWindow *focus = main_window->FindFocus();
+	if (focus && (focus==inspection_ctrl || focus->GetParent()==inspection_ctrl->GetCurrentInspectionGrid())) {
+		inspection_ctrl->OnRedirectedEditEvent(event);
+	} else if (focus && focus->IsKindOf(menu_data->toolbar_find_text->GetClassInfo())) {
+		if (event.GetId()<wxID_HIGHEST) focus->ProcessEvent(event); // redirect copy/past/cut, not others (duplicate lines, toggle mark, etc)
+	} else IF_THERE_IS_SOURCE {
+		CURRENT_SOURCE->ProcessEvent(event);
+	}
+}
+
+
+wxHtmlWindow* mxMainWindow::CreateQuickHelp(wxWindow* parent) {
+    quick_help = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition, wxSize(400,300));
+    quick_help->SetPage(LANG(MAINW_QUICKHELP_INIT,"Coloca el cursor de texto sobre una palabra y presiona Shift+F1 para ver la ayuda en este cuadro."));
+    return quick_help;
+}
+
+wxAuiNotebook *mxMainWindow::CreateNotebookSources() {
+//	wxSize client_size = GetClientSize();
+	notebook_sources = new wxAuiNotebook(this, mxID_NOTEBOOK_SOURCES, wxDefaultPosition, wxDefaultSize, wxAUI_NB_DEFAULT_STYLE | wxAUI_NB_TAB_EXTERNAL_MOVE | wxNO_BORDER | wxAUI_NB_WINDOWLIST_BUTTON);
+//	wxBitmap page_bmp = wxArtProvider::GetBitmap(wxART_NORMAL_FILE, wxART_OTHER, wxSize(tsize,tsize));
+	return notebook_sources;
+}
+
+#define lateral_trees_width OSDep::GetDPI()*160/96
+
+wxTreeCtrl* mxMainWindow::CreateExplorerTree() {
+
+	explorer_tree.treeCtrl = new mxTreeCtrl(this, mxID_TREE_EXPLORER, wxDefaultPosition, wxSize(lateral_trees_width,100), wxTR_DEFAULT_STYLE | wxNO_BORDER /*| wxTR_HIDE_ROOT*/);
+	
+	int tsize = config->HighDPI()?24:16;
+	wxImageList* imglist = new wxImageList(tsize,tsize,true,5);
+
+	wxString tdir = config->HighDPI()?"trees/24/":"trees/16/";
+	imglist->Add(bitmaps->GetBitmap(tdir+"ap_folder.png"));
+	imglist->Add(*(bitmaps->files.source));
+	imglist->Add(*(bitmaps->files.header));
+	imglist->Add(*(bitmaps->files.other));
+	imglist->Add(*(bitmaps->files.blank));
+	imglist->Add(bitmaps->GetBitmap(tdir+"ap_zpr.png"));
+	explorer_tree.treeCtrl->AssignImageList(imglist);
+	
+	explorer_tree.show_only_sources = false;
+	
+	SetExplorerPath(config->Files.last_dir);
+	
+	return explorer_tree.treeCtrl;
+}
+
+wxTreeCtrl *mxMainWindow::project_tree_struct::Create(wxWindow *parent) {
+	EXPECT(treeCtrl==nullptr);
+	
+	treeCtrl = new mxTreeCtrl(parent, mxID_TREE_PROJECT, wxPoint(0,0), wxSize(lateral_trees_width,100), wxTR_DEFAULT_STYLE | wxNO_BORDER | wxTR_HIDE_ROOT);
+	
+	int tsize = config->HighDPI()?24:16;
+	wxImageList* imglist = new wxImageList(tsize,tsize,true,5);
+	
+	wxString tdir = config->HighDPI()?"trees/24/":"trees/16/";
+	imglist->Add(bitmaps->GetBitmap(tdir+"ap_folder.png"));
+	imglist->Add(*(bitmaps->files.source));
+	imglist->Add(*(bitmaps->files.header));
+	imglist->Add(*(bitmaps->files.other));
+	imglist->Add(*(bitmaps->files.blank));
+	imglist->Add(bitmaps->GetBitmap(tdir+"ap_wxfb.png"));
+	imglist->Add(bitmaps->GetBitmap(tdir+"ap_blacklist.png"));
+	treeCtrl->AssignImageList(imglist);
+	
+	root = treeCtrl->AddRoot("Archivos Abiertos", 0);
+	sources = treeCtrl->AppendItem(root, LANG(MAINW_PT_SOURCES,"Fuentes"), 0);
+	headers = treeCtrl->AppendItem(root, LANG(MAINW_PT_HEADERS,"Cabeceras"), 0);
+	others =  treeCtrl->AppendItem(root, LANG(MAINW_PT_OTHERS,"Otros"), 0);
+
+	treeCtrl->ExpandAll();
+	
+//	GetItemBackgroundColour y GetItemTextColour no funcionan, al menos no con wx28 y en este punto de la inicializacion
+	wxColour fg_colour = treeCtrl->GetForegroundColour();
+	wxColour bg_colour = treeCtrl->GetBackgroundColour();
+	
+	hidden_colour 
+		= wxColour(
+				   (2*int(fg_colour.Red())  +int(bg_colour.Red())  )/3,
+				   (2*int(fg_colour.Green())+int(bg_colour.Green()))/3,
+				   (2*int(fg_colour.Blue()) +int(bg_colour.Blue()) )/3);
+	
+	return treeCtrl;
+}
+
+wxString mxMainWindow::project_tree_struct::MakeLabel(const wxString &path) {
+	return (project&&!config->Init.fullpath_on_project_tree) ? wxFileName(path).GetFullName() : path ;
+}
+
+void mxMainWindow::project_tree_struct::RenameFile(const wxTreeItemId &item, const wxString &path) {
+	treeCtrl->SetItemText( item, MakeLabel(path) );
+	treeCtrl->SortChildren(treeCtrl->GetItemParent(item));
+}
+void mxMainWindow::project_tree_struct::SetInherited(wxTreeItemId item, bool inherited) {
+	treeCtrl->SetItemTextColour( item, inherited ? hidden_colour : treeCtrl->GetItemTextColour(sources) );
+}
+wxTreeItemId mxMainWindow::project_tree_struct::MoveFile(wxTreeItemId old_item, eFileType where, bool and_select) {
+	// gets old data and delete old item from its old category
+	bool was_inherited = treeCtrl->GetItemTextColour(old_item)==hidden_colour;
+	wxString label = treeCtrl->GetItemText(old_item);
+	treeCtrl->Delete(old_item);
+	// insert a new item in the propper category
+	wxTreeItemId parent = GetParent(where,label);
+	wxTreeItemId new_item = treeCtrl->AppendItem(parent,label,GetIcon(where,label));
+	if (was_inherited) SetInherited(new_item,true);
+	// sort, select, return
+	treeCtrl->SortChildren(parent);
+	if (and_select) treeCtrl->SelectItem(new_item);
+	return new_item;
+}
+
+void mxMainWindow::project_tree_struct::Select(wxTreeItemId item) {
+	treeCtrl->SelectItem(item);
+	selected_item = item;
+	selected_parent = treeCtrl->GetItemParent(item);
+}
+
+void mxMainWindow::project_tree_struct::ClearSelection() {
+	treeCtrl->UnselectAll();
+	selected_item.Unset();
+	selected_parent.Unset();
+}
+
+wxTreeCtrl* mxMainWindow::CreateSymbolsTree() {
+	symbols_tree.treeCtrl = new mxTreeCtrl(this, mxID_TREE_SYMBOLS, wxPoint(0,0), wxSize(lateral_trees_width,100), wxTR_DEFAULT_STYLE | wxNO_BORDER | wxTR_HIDE_ROOT);
+
+	int tsize = config->HighDPI()?24:16;
+	wxImageList* imglist = new wxImageList(tsize,tsize, true, 15);
+	wxString tdir = config->HighDPI()?"trees/24/":"trees/16/";
+	imglist->Add(bitmaps->GetBitmap(tdir+"as_folder.png"));
+	imglist->Add(wxArtProvider::GetBitmap(wxART_NORMAL_FILE, wxART_OTHER, wxSize(tsize,tsize)));
+	
+	imglist->Add(*(bitmaps->parser.icon02_define));
+	imglist->Add(*(bitmaps->parser.icon03_func));
+	imglist->Add(*(bitmaps->parser.icon04_class));
+	imglist->Add(*(bitmaps->parser.icon05_att_unk));
+	imglist->Add(*(bitmaps->parser.icon06_att_pri));
+	imglist->Add(*(bitmaps->parser.icon07_att_pro));
+	imglist->Add(*(bitmaps->parser.icon08_att_pub));
+	imglist->Add(*(bitmaps->parser.icon09_mem_unk));
+	imglist->Add(*(bitmaps->parser.icon10_mem_pri));
+	imglist->Add(*(bitmaps->parser.icon11_mem_pro));
+	imglist->Add(*(bitmaps->parser.icon12_mem_pub));
+	imglist->Add(*(bitmaps->parser.icon13_none));
+	imglist->Add(*(bitmaps->parser.icon14_global_var));
+	imglist->Add(*(bitmaps->parser.icon18_typedef));
+	imglist->Add(*(bitmaps->parser.icon19_enum_const));
+	
+	symbols_tree.treeCtrl->AssignImageList(imglist);
+//	symbols_tree.treeCtrl->AddRoot("Simbolos encontrados", 0);
+	
+	return symbols_tree.treeCtrl;
+}
+
+
+wxPanel* mxMainWindow::CreateCompilerTree() {
+	
+	compiler_panel = new wxPanel(this,wxID_ANY,wxDefaultPosition,wxSize(lateral_trees_width,250));
+	
+	compiler_tree.treeCtrl = new mxTreeCtrl(compiler_panel, mxID_TREE_COMPILER, wxDefaultPosition, wxDefaultSize, wxTR_DEFAULT_STYLE | wxNO_BORDER | wxTR_HIDE_ROOT);
+// 	wxFont tree_font=compiler_tree.treeCtrl->GetFont();
+// 	tree_font.SetFaceName("courier");
+// 	compiler_tree.treeCtrl->SetFont(tree_font);
+	
+	wxString tdir = config->HighDPI()?"trees/24/":"trees/16/";
+	int tsize = config->HighDPI()?24:16;
+	wxImageList* imglist = new wxImageList(tsize,tsize, true, 2);
+	imglist->Add(bitmaps->GetBitmap(tdir+"co_folder.png"));
+	imglist->Add(wxArtProvider::GetBitmap(wxART_NORMAL_FILE, wxART_OTHER, wxSize(tsize,tsize)));
+	imglist->Add(bitmaps->GetBitmap(tdir+"co_info.png"));
+	imglist->Add(bitmaps->GetBitmap(tdir+"co_warning.png"));
+	imglist->Add(bitmaps->GetBitmap(tdir+"co_error.png"));
+	imglist->Add(bitmaps->GetBitmap(tdir+"co_err_info.png"));
+	imglist->Add(bitmaps->GetBitmap(tdir+"co_out.png"));
+	imglist->Add(bitmaps->GetBitmap(tdir+"co_project_warning.png"));
+	compiler_tree.treeCtrl->AssignImageList(imglist);
+	
+	compiler_tree.root = compiler_tree.treeCtrl->AddRoot("Resultados de la Compilación:", 0);
+	wxArrayTreeItemIds items;
+	compiler_tree.state = compiler_tree.treeCtrl->AppendItem(compiler_tree.root, "ZinjaI",2);
+	compiler_tree.errors = compiler_tree.treeCtrl->AppendItem(compiler_tree.root, LANG(MAINW_CT_ERRORS,"Errores"), 0);
+	compiler_tree.warnings = compiler_tree.treeCtrl->AppendItem(compiler_tree.root, LANG(MAINW_CT_WARNINGS,"Advertencias"), 0);
+	compiler_tree.all = compiler_tree.treeCtrl->AppendItem(compiler_tree.root, LANG(MAINW_CT_ALL,"Toda la salida"), 0);
+	items.Add(compiler_tree.state);
+	items.Add(compiler_tree.errors);
+	items.Add(compiler_tree.warnings);
+	items.Add(compiler_tree.all);
+	
+	// added for enabling extern toolchains, output will go to a textbox instead of a tree
+	wxBoxSizer *compiler_sizer = new wxBoxSizer(wxVERTICAL);
+	extern_compiler_output = new mxExternCompilerOutput(compiler_panel);
+	wxSizerFlags sf; sf.Expand().Proportion(1).Border(0,0);
+	compiler_sizer->Add(compiler_tree.treeCtrl,sf);
+	compiler_sizer->Add(extern_compiler_output,sf);
+	extern_compiler_output->Hide();
+	compiler_panel->SetSizer(compiler_sizer);
+	
+	CompilerErrorsManager::Initialize(compiler_tree);
+	
+	return compiler_panel;
+}
+
+void mxMainWindow::OnProcessTerminate (wxProcessEvent& event) {
+	if (event.GetPid()==debug->gdb_pid) {
+		debug->ProcessKilled();
+		return;
+#ifndef __WIN32__
+	} else if (event.GetPid()==debug->tty_pid) {
+		debug->TtyProcessKilled();
+		return;
+#endif
+	}
+	bool there_are_other_compiling_now=false;
+	// ver si es uno de los procesos que se estan esperando, y si era el ultimo del compilador para que se detenga el timer que analiza su salida
+	compile_and_run_struct_single *compile_and_run=compiler->compile_and_run_single;
+	while (compile_and_run && compile_and_run->pid!=event.GetPid()) {
+		if (compile_and_run->process && compile_and_run->compiling) there_are_other_compiling_now=true;
+		compile_and_run=compile_and_run->next;
+	}
+	if (!compile_and_run) { // esto no deberia ocurrir?
+		ZLWAR2("MainWindow","OnProcessTerminate, Unknown process id: "<<event.GetPid());
+		return;
+	}
+	// ver si hay otro proceso de compilacion en curso en paralelo
+	compile_and_run_struct_single *aux_compile_and_run=compile_and_run->next;
+	while (!there_are_other_compiling_now && aux_compile_and_run) {
+		if (aux_compile_and_run->process && aux_compile_and_run->compiling) there_are_other_compiling_now=true;
+		aux_compile_and_run=aux_compile_and_run->next;
+	}
+	if (!there_are_other_compiling_now) {
+		compiler->timer->Stop();
+		_menu_item(mxID_RUN_STOP)->Enable(false);
+		_menu_item(mxID_RUN_RUN)->Enable(true);
+		_menu_item(mxID_RUN_COMPILE)->Enable(true);
+		_menu_item(mxID_RUN_CLEAN)->Enable(true);
+//		menu.tools_makefile->Enable(true);
+	}
+	
+	// si es uno interrumpido adrede, liberar memoria y no hacer nada mas
+	if (compile_and_run->killed) { 
+		SetCompilingStatus(LANG(MAINW_STATUS_RUN_FINISHED,"Ejecución Finalizada"));
+		delete compile_and_run; return;
+	}
+
+	// actualizar el compiler_tree
+	if (compile_and_run->compiling) { // si termino la compilacion
+		compiler->ParseCompilerOutput(compile_and_run,event.GetExitCode()==0);
+	} else { // si termino la ejecucion
+		SetCompilingStatus(LANG(MAINW_STATUS_RUN_FINISHED,"Ejecución Finalizada"));
+		if (compile_and_run->valgrind_cmd.Len()) ShowValgrindPanel(mxVO_VALGRIND,DIR_PLUS_FILE(config->temp_dir,"valgrind.out"));
+		delete compile_and_run->process;
+		delete compile_and_run;
+		if (mxGCovSideBar::HaveInstance()) mxGCovSideBar::GetInstance().LoadData();
+	}
+}
+
+void mxMainWindow::OnRunClean (wxCommandEvent &event) {
+	_prevent_execute_yield_execute_problem;
+	if (project) project->Clean();
+	else IF_THERE_IS_SOURCE {
+		mxSource *src=CURRENT_SOURCE;
+		if (src->sin_titulo) return;
+		wxRemoveFile(src->GetBinaryFileName().GetFullPath());
+	}
+}
+
+void mxMainWindow::StartExecutionStuff (compile_and_run_struct_single *compile_and_run, wxString msg) {
+//	compile_and_run.linking=(what==mES_LINK || what==mES_LINK_AND_RUN);
+	// ver si comenzo correctamente
+	if (compile_and_run->pid==0) {
+//		wxBell();
+		if (compile_and_run->compiling)
+			SetCompilingStatus(LANG(MAINW_COULDNOT_LAUNCH_PROCESS,"No se pudo lanzar el proceso"));
+		else
+			SetCompilingStatus(LANG(MAINW_COULDNOT_RUN,"No se pudo lanzar la ejecución!"));
+		delete compile_and_run;
+		return;
+	}
+	// habilitar y deshabilitar lo que corresponda en menues
+	_menu_item(mxID_RUN_STOP)->Enable(true);
+	_menu_item(mxID_RUN_CLEAN)->Enable(false);
+	_menu_item(mxID_RUN_COMPILE)->Enable(false);
+	if (compile_and_run->compiling) {
+		_menu_item(mxID_RUN_RUN)->Enable(false);
+//		menu.tools_makefile->Enable(false);
+		// mostrar el arbol de compilacion
+		if (!config->Init.autohide_panels) {
+			if (!m_aui->GetPane(compiler_panel).IsShown()) {
+				m_aui->GetPane(quick_help).Hide();
+				m_aui->GetPane(compiler_panel).Show();
+				_menu_item(mxID_VIEW_COMPILER_TREE)->Check(true);
+				m_aui->Update();
+			}
+		}
+		
+		compiler->timer->Start(500);
+	}
+	// informar al usuario
+	if (msg.Len()) SetCompilingStatus(msg,!project);
+}
+
+
+void mxMainWindow::OnRunRun (wxCommandEvent &event) {
+	_prevent_execute_yield_execute_problem;
+	if (!compiler->valgrind_cmd.Len() && config->Debug.always_debug) { // si siempre hay que ejecutar en el depurador
+		OnDebugRun(event); // patearle la bocha
+		return;
+	}
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->HideCalltip();
+	if (project) { // si hay que ejecutar un proyecto
+		_LAMBDA_0( lmbRunProject, { if (project) project->Run(); } );
+		compiler->BuildOrRunProject(false,new lmbRunProject());
+		
+	} else IF_THERE_IS_SOURCE { // si hay que ejecutar un ejercicio
+		mxSource *source=CURRENT_SOURCE;
+		if (source->sin_titulo) { // si no esta guardado, siempre compilar
+			if (source->GetLine(0).StartsWith("make me a sandwich")) { wxMessageBox("No way!"); return; }
+			else if (source->GetLine(0).StartsWith("sudo make me a sandwich")) source->SetText(wxString("/** Ok, you win! **/")+wxString(250,' ')+"#include <iostream>\n"+wxString(250,' ')+"int main(int argc, char *argv[]) {std::cout<<\"Here you are:\\n\\n   /-----------\\\\\\n  ~~~~~~~~~~~~~~~\\n   \\\\-----------/\\n\";return 0;}\n\n");
+		}
+		_LAMBDA_1( lmdRunSource, mxSource *,src, { main_window->RunSource(src); } );
+		CompileSource(false,new lmdRunSource(master_source?master_source:CURRENT_SOURCE));
+	}
+}
+
+void mxMainWindow::OnRunRunOld (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->HideCalltip();
+	if (project) { // si hay que ejecutar un proyecto
+		project->Run();
+	} else IF_THERE_IS_SOURCE { // si hay que ejecutar un ejercicio
+		RunSource(master_source?master_source:CURRENT_SOURCE);
+	}
+}
+
+void mxMainWindow::OnRunCompileConfig (wxCommandEvent &event) {
+	if (compiler->IsCompiling()) {
+		compile_and_run_struct_single *compile_and_run=compiler->compile_and_run_single;
+		while (compile_and_run) {
+			if (compile_and_run->process->Exists(compile_and_run->pid))
+				wxProcess::Kill(compile_and_run->pid,wxSIGKILL,wxKILL_CHILDREN);
+			compile_and_run=compile_and_run->next;
+		}
+	}
+	if (project)
+		new mxProjectConfigWindow(this);
+	else IF_THERE_IS_SOURCE	
+		new mxCompileConfigWindow(this,CURRENT_SOURCE);
+}
+
+void mxMainWindow::OnPreferences (wxCommandEvent &event) {
+	mxPreferenceWindow::ShowUp();
+}
+
+void mxMainWindow::OnRunCompile (wxCommandEvent &event) {
+	_prevent_execute_yield_execute_problem;
+	if (project) {
+		compiler->BuildOrRunProject(false,nullptr);
+	} else IF_THERE_IS_SOURCE {
+		CompileSource(true,nullptr);
+	}
+}
+
+
+void mxMainWindow::RunSource (mxSource *source) {
+	
+	if (source->config_running.always_ask_args) {
+		int res = mxArgumentsDialog(this,source->GetPath(true),source->exec_args,source->working_folder.GetFullPath()).ShowModal();
+		if (res==0) return;
+		source->working_folder = mxArgumentsDialog::last_workdir;
+		source->exec_args = (res&AD_EMPTY) ? "" : mxArgumentsDialog::last_arguments;
+		if (res&AD_REMEMBER) source->config_running.always_ask_args=false;
+	}
+	
+	// armar la linea de comando para ejecutar
+	compiler->last_caption = source->page_text;
+	compiler->last_runned = source;
+	
+	// agregar el prefijo para valgrind
+	wxString exe_pref;
+#ifndef __WIN32__
+	if (compiler->valgrind_cmd.Len())
+		exe_pref = compiler->valgrind_cmd+" ";
+#endif
+	
+	wxString command(config->Files.terminal_command);
+	command.Replace("${TITLE}",LANG(GENERA_CONSOLE_CAPTION,"ZinjaI - Consola de Ejecucion")); // NO USAR ACENTOS, PUEDE ROMER EL X!!!! (me daba un segfault en la libICE al poner el ó en EjeuciÓn)
+	if (command.Len()!=0) {
+		if (command==" ") 
+			command="";
+		else if (command[command.Len()-1]!=' ') 
+			command<<" ";
+	}
+	command<<mxUT::GetRunnerBaseCommand(source->config_running.wait_for_key?WKEY_ALWAYS:WKEY_NEVER);
+	
+	command<<"\""<<source->working_folder.GetFullPath()<<(source->working_folder.GetFullPath().Last()=='\\'?"\\\" ":"\" ");
+
+	compiler->CheckForExecutablePermision(source->GetBinaryFileName().GetFullPath());
+	
+	command<<exe_pref<<"\""<<source->GetBinaryFileName().GetFullPath()<<"\"";
+//	mxUT::ParameterReplace(command,"${ZINJAI_DIR}",wxGetCwd());
+	// agregar los argumentos de ejecucion
+	if (source->exec_args.Len()) command<<' '<<source->exec_args;	
+	
+	// lanzar la ejecucion
+	EnvVars::SetMode(EnvVars::RUNNING);
+	compile_and_run_struct_single *compile_and_run=new compile_and_run_struct_single("OnRunSource");
+	compile_and_run->process=new wxProcess(this->GetEventHandler(),mxPROCESS_COMPILE);
+	compile_and_run->pid=wxExecute(command, wxEXEC_NOHIDE|wxEXEC_MAKE_GROUP_LEADER,compile_and_run->process);
+	if (exe_pref.Len()) compile_and_run->valgrind_cmd=exe_pref;
+	StartExecutionStuff (compile_and_run, LANG(GENERAL_RUNNING_DOTS,"Ejecutando...") );
+	
+}
+
+
+
+void mxMainWindow::OnRunStop (wxCommandEvent &event) {
+	if (compiler->IsCompiling()) {
+		compile_and_run_struct_single *compile_and_run=compiler->compile_and_run_single, *next;
+		while (compile_and_run) {
+			next=compile_and_run->next;
+			if (compile_and_run->pid!=0 && (compile_and_run->compiling || compile_and_run->linking) && compile_and_run->process->Exists(compile_and_run->pid)) {
+				compile_and_run->killed=true;
+				if (compile_and_run->pid!=0)
+					wxProcess::Kill(compile_and_run->pid,wxSIGKILL,wxKILL_CHILDREN);
+			}
+			compile_and_run=next;
+		}
+		SetCompilingStatus("Detenido!");
+	} else if (compiler->compile_and_run_single) {
+		compile_and_run_struct_single *compile_and_run=compiler->compile_and_run_single;
+		compile_and_run->killed=true;
+		if (compile_and_run->pid!=0)
+			wxProcess::Kill(compile_and_run->pid,wxSIGKILL,wxKILL_CHILDREN);
+	}
+	_menu_item(mxID_RUN_STOP)->Enable(false);
+	_menu_item(mxID_RUN_COMPILE)->Enable(true);
+	_menu_item(mxID_RUN_RUN)->Enable(true);
+	_menu_item(mxID_RUN_CLEAN)->Enable(true);
+//		menu.tools_makefile->Enable(true);
+	status_bar->SetProgress(0);
+	status_bar->SetStatusText(wxString(LANG(GENERAL_READY,"Listo")));
+	
+}
+
+void mxMainWindow::OnFileSaveAll (wxCommandEvent &event) {
+	if (project)
+		project->Save();
+	IF_THERE_IS_SOURCE {
+		for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+			mxSource *source = (mxSource*)(notebook_sources->GetPage(i));
+			if (source->GetModify()) {
+				notebook_sources->SetSelection(i);
+				if (!source->sin_titulo) {
+					source->SaveSource();
+					parser->ParseSource(source,true);
+				} else
+					OnFileSaveAs(event);
+			}
+		}
+	}
+}
+
+/**
+* @brief Cierra una pestaña de codigo, pidiendo confirmacion al usuario si hay cambios
+* @param i Indice de la pestaña a cerrar, o -1 para cerrar la actual
+**/
+bool mxMainWindow::CloseFromGui (int i) {
+	if (i<0) i=notebook_sources->GetSelection();
+	if (i<0||i>=int(notebook_sources->GetPageCount())) return false;
+	mxSource *source=(mxSource*)notebook_sources->GetPage(i);
+	if (source->GetModify() && source->next_source_with_same_file==source) {
+		notebook_sources->SetSelection(i);
+		mxMessageDialog::mdAns res =
+			mxMessageDialog(main_window,LANG(MAINW_SAVE_CHANGES_BEFORE_CLOSING_QUESTION,""
+												 "Hay cambios sin guardar. Desea guardarlos antes de cerrar el archivo?"))
+				.Title(source->page_text).ButtonsYesNoCancel().IconQuestion().Run();
+		if (res.cancel)
+			return false;
+		else if (res.yes) {
+			if (source->sin_titulo) {
+				wxCommandEvent evt;
+				OnFileSaveAs(evt);
+				if (source->GetModify())
+					return false;
+			} else
+				source->SaveSource();
+		}
+	}
+	CloseSource(i);
+	return true;
+}
+
+void mxMainWindow::OnFileClose (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE CloseFromGui();
+}
+
+void mxMainWindow::OnFileCloseAll (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		for (int i=notebook_sources->GetPageCount()-1;i>=0;i--)
+			CloseFromGui(i);
+	}
+}
+
+void mxMainWindow::OnFileCloseAllButOne (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		int sel=notebook_sources->GetSelection();
+		for (int i=notebook_sources->GetPageCount()-1;i>=0;i--)
+			if (i!=sel) CloseFromGui(i);
+	}
+}
+
+void mxMainWindow::OnFileCloseProject (wxCommandEvent &event) {
+	mxAUIFreezeGuard m_aui_freeze(*m_aui);
+	if (debug->IsDebugging()) debug->Stop();
+//	if (project->modified) {
+		if (config->Init.save_project) {
+			project->Save();
+		} else {
+			mxMessageDialog::mdAns ret = 
+				mxMessageDialog(main_window,LANG(MAINW_SAVE_PROJECT_BEFORE_CLOSING_QUESTION,""
+												 "Desea guardar los cambios del proyecto anterior antes de cerrarlo?"))
+					.Check1(LANG(MAINW_ALWAYS_SAVE_PROJECT_ON_CLOSE,"Guardar cambios siempre al cerrar un proyecto"),false)
+					.Title(project->GetFileName()).ButtonsYesNoCancel().IconQuestion().Run();
+			if (ret.cancel)	return;
+			else if (ret.yes) project->Save();
+			if (ret.check1) config->Init.save_project=true;
+		}
+//	}
+	
+	// cerrar si habia un proyecto anterior
+	bool cerrar=true;
+	for (int i=notebook_sources->GetPageCount()-1;i>=0;i--)
+		if (((mxSource*)(notebook_sources->GetPage(i)))->GetModify()) {
+			cerrar=false;
+			break;
+		}
+	if (notebook_sources->GetPageCount()!=0) {
+		if (cerrar || mxMessageDialog(main_window,LANG(MAINW_CHANGE_CLOSE_ALL_QUESTION,""
+													   "Hay cambios sin guardar. Se cerraran todos los archivos. Desea Continuar?"))
+						.Title(LANG(GENERAL_WARNING,"Aviso")).ButtonsYesNo().IconQuestion().Run().yes )
+		{
+			for (int i=notebook_sources->GetPageCount()-1;i>=0;i--) {
+				mxSource *src = (mxSource*)(notebook_sources->GetPage(i));
+				if (src->IsInTheProject()) src->UpdateExtras();
+				notebook_sources->DeletePage(i);
+			}
+		} else
+			return;
+	}
+	main_window->project_tree.DeleteAllFiles();
+	delete project;
+	if (g_welcome_panel) 
+		ShowWelcome(true);
+	else {
+		NewFileFromTemplate(config->Files.default_template);
+		m_aui->Update();
+	}
+}
+
+void mxMainWindow::OnFileExportHtml (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		wxFileDialog dlg (this, LANG(GENERAL_SAVE,"Guardar"),source->GetPath(true),source->GetFileName()+".html", "Documento HTML | *.html", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+		dlg.SetDirectory(wxString(project?project->last_dir:config->Files.last_dir));
+		if (dlg.ShowModal() == wxID_OK) {
+			project?project->last_dir:config->Files.last_dir=dlg.GetPath();
+			CodeExporter ce;
+			wxString title = notebook_sources->GetPageText(notebook_sources->GetSelection());
+			if (title.Last()=='*') 
+				title.RemoveLast();
+			if (!ce.ExportHtml(source,title,dlg.GetPath())) {
+				mxMessageDialog(this,LANG(MAINW_COULD_NOT_EXPORT_HTML,"No se pudo guardar el archivo"))
+								.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+			}
+		}
+	}
+}
+
+void mxMainWindow::OnFileReload (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->UserReload();
+}
+
+bool mxMainWindow::CloseSource (mxSource *src) {
+	for(unsigned int i=0;i<notebook_sources->GetPageCount();i++) { 
+		if (notebook_sources->GetPage(i)==src) return CloseSource(i);
+	}
+	return false;
+}
+
+bool mxMainWindow::CloseSource (int i) {
+	mxSource *source=(mxSource*)notebook_sources->GetPage(i);
+	if (g_share_manager && g_share_manager->Exists(source))  {
+		mxMessageDialog::mdAns ans = 
+			mxMessageDialog(main_window,"El archivo esta siendo compartido con modificaciones.\n"
+										 "Si lo cierra dejara de estar disponible.\n"
+										 "¿Realmente desea cerrar el archivo?")
+				.Check1("Continuar compartiendo (\"sin modificaciones\") despues de cerrarlo.",false)
+				.Title(source->page_text).ButtonsYesNo().Run();
+		if (ans.yes) {
+			if (ans.check1)
+				g_share_manager->Freeze(source);
+			else
+				g_share_manager->Delete(source);
+		} else {
+			return false;
+		}
+	}
+	if (!project) {
+		if (source->next_source_with_same_file==source) {
+			project_tree.treeCtrl->Delete(source->GetTreeItem());
+			parser->RemoveFile(source->GetFullPath());
+		}
+	} else {
+		parser->ParseIfUpdated(source->source_filename);
+		source->UpdateExtras();
+	}
+//	debug->OnSourceClosed(source); // supuestamente lo hace el destructor de mxSource llamando a debug->UnregisterSource
+	notebook_sources->DeletePage(i);
+	if (!project && g_welcome_panel && notebook_sources->GetPageCount()==0) ShowWelcome(true);
+	return true;
+}
+
+void mxMainWindow::OnViewFullScreen(wxCommandEvent &event) {
+	mxAUIFreezeGuard m_aui_freeze(*m_aui);
+	gui_fullscreen_mode=!gui_fullscreen_mode;
+	if (!gui_fullscreen_mode) { // sale de la pantalla completa y vuelve a ser ventana
+		_menu_item(mxID_VIEW_FULLSCREEN)->Check(false);
+		if (config->Init.autohide_toolbars_fs && (!debug->debugging || !config->Debug.autohide_toolbars)) { // reacomodar las barras de herramientas (si no esta depurando, por que si esta depurando las reacomoda el depurador cuando termina)
+#define _aux_fstb_1(NAME) \
+			if (_toolbar_visible(tb##NAME)) { _menu_item(mxID_VIEW_TOOLBAR_##NAME)->Check(true); m_aui->GetPane(_get_toolbar(tb##NAME)).Show(); } \
+			else { _menu_item(mxID_VIEW_TOOLBAR_##NAME)->Check(false); m_aui->GetPane(_get_toolbar(tb##NAME)).Hide(); }
+			_aux_fstb_1(FILE);
+			_aux_fstb_1(EDIT);
+			_aux_fstb_1(VIEW);
+			_aux_fstb_1(RUN);
+			_aux_fstb_1(TOOLS);
+			_aux_fstb_1(MISC);
+			_aux_fstb_1(FIND);
+			if (project) { _aux_fstb_1(PROJECT); }
+			_aux_fstb_1(DEBUG);
+		}
+		
+		ShowFullScreen(false);
+		m_aui->OnFullScreenEnd(); // reacomodar los paneles
+		
+	} else { // entra al modo pantalla completa
+		_menu_item(mxID_VIEW_FULLSCREEN)->Check(true);
+		if (valgrind_panel) m_aui->GetPane(valgrind_panel).Hide();
+		if (config->Init.autohide_toolbars_fs) { // reacomodar las barras de herramientas
+			if (!debug->debugging || !config->Debug.autohide_toolbars) { // si esta depurando, las oculta el depurador cuando termina, sino...
+#define _on_view_fullscreen_aux_1(ID) { \
+	wxMenuItem *menu_item = _menu_item(mxID_VIEW_TOOLBAR_##ID); \
+	if (menu_item->IsChecked()) { menu_item->Check(false); m_aui->GetPane(_get_toolbar(tb##ID)).Hide(); } \
+}
+				_on_view_fullscreen_aux_1(FILE);
+				_on_view_fullscreen_aux_1(VIEW);
+				_on_view_fullscreen_aux_1(EDIT);
+				_on_view_fullscreen_aux_1(RUN);
+				_on_view_fullscreen_aux_1(DEBUG);
+				_on_view_fullscreen_aux_1(TOOLS);
+				_on_view_fullscreen_aux_1(MISC);
+				_on_view_fullscreen_aux_1(FIND);
+				if (project) _on_view_fullscreen_aux_1(PROJECT);
+			}
+		}
+		
+		ShowFullScreen(true,(config->Init.autohide_menus_fs?wxFULLSCREEN_NOMENUBAR:0)|wxFULLSCREEN_NOTOOLBAR|wxFULLSCREEN_NOSTATUSBAR|wxFULLSCREEN_NOBORDER|wxFULLSCREEN_NOCAPTION );
+		m_aui->OnFullScreenStart(); // reacomodar los paneles
+		mxOSD::MakeTimed(this,LANG(MAINW_FULLSCREEN_OUT_TIP,"Presione F11 para salir del modo pantalla completa"),3000);
+		Raise();
+		ZLINF("MainWindow","OnViewFullScreen wxYield:in");
+		wxYield();
+		ZLINF("MainWindow","OnViewFullScreen wxYield:out");
+//		IF_THERE_IS_SOURCE CURRENT_SOURCE->SetFocus();
+	}
+	
+	menu_data->SetAccelerators(); // por alguna razon, pasar a pantalla completa hace que se pierdan los accelerators
+	
+}
+
+void mxMainWindow::OnViewHideBottom (wxCommandEvent &event) {
+	if (m_aui->GetPane(compiler_panel).IsShown()) {
+		m_aui->Hide(PaneId::Compiler);
+	}
+	if (m_aui->GetPane(quick_help).IsShown()) {
+		m_aui->GetPane(quick_help).Hide();
+	}
+	m_aui->Update();
+}
+
+void mxMainWindow::OnViewCodeStyle (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *src = CURRENT_SOURCE;
+		_menu_item(mxID_VIEW_CODE_STYLE)->Check(!src->config_source.syntaxEnable);
+		src->SetStyle(!src->config_source.syntaxEnable);
+		src->SetColours(false); // por alguna razon el SetStyle de arriba cambia el fondo de los nros de linea
+	}
+}
+
+void mxMainWindow::OnViewCodeColours (wxCommandEvent &event) {
+	new mxColoursEditor(this);
+}
+
+void mxMainWindow::OnViewLineWrap (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source=CURRENT_SOURCE;
+		int pos=source->GetCurrentPos();
+		source->config_source.wrapMode=!source->config_source.wrapMode;
+		_menu_item(mxID_VIEW_LINE_WRAP)->Check(source->config_source.wrapMode);
+		source->SetWrapMode (source->config_source.wrapMode?wxSTC_WRAP_WORD: wxSTC_WRAP_NONE);
+		source->GotoPos(pos);
+		source->SetFocus();
+	}
+}
+
+void mxMainWindow::OnViewWhiteSpace (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source=CURRENT_SOURCE;
+		source->config_source.whiteSpace = !(source->config_source.whiteSpace);
+		_menu_item(mxID_VIEW_WHITE_SPACE)->Check(source->config_source.whiteSpace);
+		source->SetViewWhiteSpace(source->config_source.whiteSpace?wxSTC_WS_VISIBLEALWAYS:wxSTC_WS_INVISIBLE);
+		source->SetViewEOL(source->config_source.whiteSpace);
+		source->SetFocus();
+//		wxYield();
+	}
+}
+
+void mxMainWindow::OnViewProjectTree (wxCommandEvent &event) {
+	if (m_aui->ToggleFromMenu(PaneId::Project))
+		project_tree.treeCtrl->SetFocus();
+}
+
+void mxMainWindow::OnViewSymbolsTree (wxCommandEvent &event) {
+	m_aui->ToggleFromMenu(PaneId::Symbols);
+}
+
+void mxMainWindow::OnViewUpdateSymbols (wxCommandEvent &event) {
+	wxWindow *focus = main_window->FindFocus();
+	if (focus) focus = focus->GetParent();
+	if (config->Init.autohide_panels) {
+//		m_aui->Show(PaneId::Symbols);
+	} else {	
+		m_aui->Show(PaneId::Symbols);
+	}
+	UpdateSymbols();
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFocus();
+}
+
+void mxMainWindow::OnSymbolTreeIncludes (wxCommandEvent &event) {
+	parser->follow_includes=event.IsChecked();
+	UpdateSymbols();
+}
+
+void mxMainWindow::ShowQuickHelp (wxString keyword, bool hide_compiler_tree) {
+	// load help text
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->HideCalltip();
+	quick_help->SetPage(g_help->GetQuickHelp(keyword));
+	m_aui->Show(PaneId::QuickHelp,true);
+	if (hide_compiler_tree) m_aui->Hide(PaneId::Compiler);
+}
+
+void mxMainWindow::OnViewToolbarsConfig (wxCommandEvent &event) {
+	mxPreferenceWindow::ShowUp()->SetToolbarPage();
+}
+
+void mxMainWindow::OnToggleToolbar (int menu_item_id, int toolbar_id, bool update_aui) {
+	wxMenuItem *menu_item = _menu_item(menu_item_id);
+	wxToolBar *toolbar = menu_data->GetToolbar(toolbar_id);
+	bool &config_entry = menu_data->GetToolbarPosition(toolbar_id).visible;
+	if (config_entry) {
+		menu_item->Check(false);
+		m_aui->GetPane(toolbar).Hide();
+		if (!(gui_debug_mode&&config->Debug.autohide_toolbars) && !(gui_fullscreen_mode&&config->Init.autohide_toolbars_fs)) config_entry=false;
+	} else {
+		menu_item->Check(true);
+		m_aui->GetPane(toolbar).Show();
+		if (!(gui_debug_mode&&config->Debug.autohide_toolbars) && !(gui_fullscreen_mode&&config->Init.autohide_toolbars_fs)) config_entry=true;
+	}
+	SortToolbars(update_aui);
+}
+
+void mxMainWindow::OnViewToolbarView (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_VIEW,MenusAndToolsConfig::tbVIEW);
+}
+
+void mxMainWindow::OnViewToolbarTools (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_TOOLS,MenusAndToolsConfig::tbTOOLS);
+}
+
+void mxMainWindow::OnViewToolbarProject (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_PROJECT,MenusAndToolsConfig::tbPROJECT);
+}
+
+void mxMainWindow::OnViewToolbarFile (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_FILE,MenusAndToolsConfig::tbFILE);
+}
+
+void mxMainWindow::OnViewToolbarFind (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_FIND,MenusAndToolsConfig::tbFIND);
+	m_aui->Update();
+}
+
+void mxMainWindow::OnViewToolbarDebug (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_DEBUG,MenusAndToolsConfig::tbDEBUG);
+}
+
+void mxMainWindow::OnViewToolbarMisc (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_MISC,MenusAndToolsConfig::tbMISC);
+}
+
+void mxMainWindow::OnViewToolbarEdit (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_EDIT,MenusAndToolsConfig::tbEDIT);
+}
+void mxMainWindow::OnViewToolbarRun (wxCommandEvent &event) {
+	OnToggleToolbar(mxID_VIEW_TOOLBAR_RUN,MenusAndToolsConfig::tbRUN);
+}
+
+void mxMainWindow::OnViewCompilerTree (wxCommandEvent &event) {
+	m_aui->ToggleFromMenu(PaneId::Compiler);
+}
+
+void mxMainWindow::OnViewExplorerTree (wxCommandEvent &event) {
+	if (!project && !m_aui->IsVisible(PaneId::Explorer)) SetExplorerPath(config->Files.last_dir);
+	if (m_aui->ToggleFromMenu(PaneId::Explorer)) {
+		explorer_tree.treeCtrl->SetFocus();
+	}
+}
+
+
+mxSource *mxMainWindow::IsOpen (wxFileName filename) {
+	for (int i=0,j=notebook_sources->GetPageCount();i<j;i++)
+		if ( !((mxSource*)(notebook_sources->GetPage(i)))->sin_titulo && 
+			SameFile(((mxSource*)(notebook_sources->GetPage(i)))->source_filename,filename))
+				return (mxSource*)(notebook_sources->GetPage(i));
+	return nullptr;
+}
+
+mxSource *mxMainWindow::IsOpen (wxTreeItemId tree_item) {
+	for (int i=0,j=notebook_sources->GetPageCount();i<j;i++)
+		if ( ((mxSource*)(notebook_sources->GetPage(i)))->GetTreeItem() == tree_item )
+			return (mxSource*)(notebook_sources->GetPage(i));
+	return nullptr;
+}
+
+void mxMainWindow::project_tree_struct::DeleteAllFiles() {
+	treeCtrl->DeleteChildren(sources);
+	treeCtrl->DeleteChildren(headers);
+	treeCtrl->DeleteChildren(others);
+	if (blacklist.IsOk()) { 
+		treeCtrl->DeleteChildren(blacklist);
+		treeCtrl->Delete(blacklist); 
+		blacklist.Unset(); 
+	}
+}
+// esta funcion solo se llama cuando no es proyecto
+wxTreeItemId mxMainWindow::project_tree_struct::GetParent(eFileType where, const wxString &path) {
+	if (where==FT_NULL) where = mxUT::GetFileType(path,false);
+	switch(where) {
+	case FT_SOURCE:    return sources;
+	case FT_HEADER:    return headers;
+	case FT_OTHER:     return others;
+	case FT_BLACKLIST: 
+		if (!blacklist.IsOk())
+			blacklist = treeCtrl->AppendItem(root, LANG(MAINW_PT_BLACKLIST,"Lista Negra"), 0);
+		return blacklist;
+	default:EXPECT(false);
+	}
+	return others; ///< should never happen
+}
+
+void mxMainWindow::project_tree_struct::DeleteFile(wxTreeItemId item) {
+	treeCtrl->Delete(item);
+}
+
+int mxMainWindow::project_tree_struct::GetIcon(eFileType where, const wxString &path) {
+	if (where==FT_NULL) where = mxUT::GetFileType(path,false);
+	switch(where) {
+	case FT_SOURCE:    return 1;
+	case FT_HEADER:    return 2;
+	case FT_OTHER:     return (wxFileName(path).GetExt().MakeUpper()=="FBP"?5:3);
+	case FT_BLACKLIST: return 6;
+	default:EXPECT(false);
+	}
+	return 3; ///< should never happen
+}
+
+wxTreeItemId mxMainWindow::project_tree_struct::AddFile(const wxString &path, eFileType where, bool sort) {
+	wxString iname = MakeLabel(path);
+	wxTreeItemId parent = GetParent(where,path);
+	int icon_num = GetIcon(where,path);
+	wxTreeItemId item = treeCtrl->AppendItem(parent, MakeLabel(path), icon_num);
+	if (sort) treeCtrl->SortChildren(parent);
+	return item;
+}
+
+mxSource *mxMainWindow::FindSource(wxFileName filename, int *pos) {
+	for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+		if ( !((mxSource*)(notebook_sources->GetPage(i)))->sin_titulo && SameFile(((mxSource*)(notebook_sources->GetPage(i)))->source_filename,filename) ) {
+			if (pos) *pos=i;
+			return (mxSource*)(notebook_sources->GetPage(i));
+		}
+	}
+	return nullptr;
+}
+
+/**
+* @return nullptr si no encuentra el archivo, puntero al mxSource si lo abre en Zinjai, 
+*         o puntero a main_window si se abre con un programa externo (como wxFormBuilder)
+*
+* @param filename 			path completo del archivo a abrir
+* @param add_to_project		indica si hay que agregar el archivo al arbol de archivos (deberia 
+*							ser siempre asi cuando no hay proyecto) y al proyecto (en caso
+*							de haber uno) 
+**/
+mxSource *mxMainWindow::OpenFile (const wxString &filename, bool add_to_project) {
+	if (g_welcome_panel && notebook_sources->GetPageCount()==0) ShowWelcome(false);
+	if (filename=="" || !wxFileName::FileExists(filename))
+		return nullptr;
+	
+	if (project && project->GetWxfbActivated(true) && filename.Len()>4 && filename.Mid(filename.Len()-4).CmpNoCase(".fbp")==0) {
+		if (add_to_project) {
+			project->AddFile(FT_OTHER,filename);
+		} else {
+			mxOSDGuard osd(this,LANG(WXFB_OPENING,"Abriendo wxFormBuilder..."));
+			wxExecute(wxString("\"")+config->Files.wxfb_command+"\" \""+filename+"\"");
+			ZLINF("MainWindow","OpenFile wxYield:in");
+			wxYield(); 
+			ZLINF("MainWindow","OpenFile wxYield:out");
+			wxMilliSleep(1000);
+		}
+		return EXTERNAL_SOURCE;
+	}
+	
+	int i;
+	mxSource *source = FindSource(filename,&i);
+	bool not_opened=true;
+	if (source) {
+		notebook_sources->SetSelection(i);
+		source->SetFocus();
+		not_opened=false;
+	} else {
+		project_file_item *fitem = project?project->FindFromFullPath(filename):nullptr;
+		source = new mxSource(notebook_sources, AvoidDuplicatePageText(wxFileName(filename).GetFullName()),fitem);
+		source->sin_titulo=false;
+		source->LoadFile(filename);
+		SimpleTemplates::Initialize(); // ensures g_templates!=null
+		source->SetCompilerOptions(g_templates->GetParsedCompilerArgs(source->IsCppOrJustC()));
+		if (project) source->m_extras->ToSource(source);
+	}
+	
+	eFileType ftype = mxUT::GetFileType(filename,false);
+	project_file_item *fitem = project ? project->FindFromFullPath(filename) : nullptr;
+	if (not_opened) notebook_sources->AddPage(source, source->page_text, true, *bitmaps->files.GetFromType(ftype));
+	if (add_to_project) {
+		if (project) {
+			 if (!fitem) fitem = project->AddFile(ftype,filename);
+			 source->SetTreeItem(fitem->GetTreeItem());
+		} else {
+			wxTreeItemId tree_item = project_tree.AddFile(filename,ftype);
+			source->SetTreeItem(tree_item);
+		}
+		source->never_parsed=false;
+		parser->ParseFile(filename);
+	}
+	if (ftype!=FT_OTHER && add_to_project) {
+		source->never_parsed=false;
+		parser->ParseFile(filename);
+	}
+	return source;
+}
+
+mxSource *mxMainWindow::OpenFile (const wxString &filename) {
+	return OpenFile(filename,!project);
+}
+
+static wxString GetNameForSaveAs(mxSource *source) {
+	wxFileDialog dlg (main_window, LANG(GENERAL_SAVE,"Guardar"),source->sin_titulo?config->Files.last_dir:source->GetPath(true),source->GetFileName(), "Any file (*)|*", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+	dlg.SetWildcard("Todos los archivos|*|Archivos de C/C++|" WILDCARD_CPP "|Fuentes|" WILDCARD_SOURCE "|Cabeceras|" WILDCARD_HEADER);
+	if (dlg.ShowModal() == wxID_OK) return dlg.GetPath();
+	return wxEmptyString;
+}
+
+/**
+* - Al abrir un proyecto multiple indica si cerrar o no los archivos que tengamos abiertos de antes (1024 es no, otra cosa es si)
+* - Al abrir archivos sueltos puede contener respuestas a las preguntas de si agregar al proyecto, mover a la carpeta o esas cosas (para
+*   cuando elegimo hacer lo mismo para todos en la primer pregunta), como flags por bits
+**/
+void mxMainWindow::OpenFileFromGui (wxFileName filename, int *multiple) {
+	bool file_exists = filename.FileExists();
+#ifndef __WIN32__
+	if (!file_exists) { // problems due to ansi-wx on utf8-linux
+		wxString fname = filename.GetFullPath();
+		wxFileName new_filename(filename.GetFullPath().ToUTF8().data());
+		if (new_filename.FileExists()) { filename = new_filename; file_exists=true; }
+	}
+#endif
+	if (!file_exists) {
+		if (wxFileName::DirExists(DIR_PLUS_FILE(filename.GetFullPath(),"."))) {
+			SetExplorerPath(filename.GetFullPath());
+			ShowExplorerTreePanel();
+		} else {
+			mxMessageDialog(main_window,LANG(MAINW_FILE_NOT_EXISTS,"El archivo no existe."))
+				.Title(filename.GetFullPath()).IconInfo().Run();
+		}
+		return;
+	}
+	status_bar->SetStatusText(wxString("Abriendo ")<<filename.GetFullPath());
+	if (!project) config->Files.last_dir=filename.GetPath();
+	if (filename.GetExt().CmpNoCase(_T(PROJECT_EXT))==0) { // si es un proyecto
+		// cerrar si habia un proyecto anterior
+		if (project && filename!=DIR_PLUS_FILE(project->path,project->filename)) { // la segunda condicion es porque puedo estar creando uno nuevo encima del abierto, en ese caso, si guardo el abiero pierdo el que creo el asistente
+			mxMessageDialog::mdAns ret;
+			if (config->Init.save_project || 
+				(/*project->modified && */
+				 (ret=mxMessageDialog(main_window,LANG(MAINW_ASK_SAVE_PREVIOUS_PROJECT,""
+													   "Desea guardar los cambios del proyecto anterior antes de cerrarlo?"))
+						.Check1(LANG(MAINW_ALWAYS_SAVE_PROJECT_ON_CLOSE,"Guardar cambios siempre al cerrar un proyecto"),false)
+						.Title(project->GetFileName()).ButtonsYesNo().IconQuestion().Run()).yes) )
+				{
+				if (!config->Init.save_project && ret.check1)
+					config->Init.save_project=true;
+				project->Save();
+			}
+		}
+		// cerrar todos los archivos que no pertenezcan al proyecto
+		if ((!multiple || (*multiple)!=1024)) {
+				for (int i=notebook_sources->GetPageCount()-1;i>=0;i--) {
+					mxSource *source = ((mxSource*)(notebook_sources->GetPage(i)));
+					if (source ->GetModify()) {
+						notebook_sources->SetSelection(i);
+						mxMessageDialog::mdAns res =
+							mxMessageDialog(main_window,LANG(MAINW_SAVE_CHANGES_QUESTION,"Hay cambios sin guardar. Desea guardarlos?"))
+								.Title(source->page_text).IconQuestion().ButtonsYesNoCancel().Run();
+						if (res.cancel) {
+							status_bar->SetStatusText(LANG(GENERAL_READY,"Listo"));
+							return;
+						} else if (res.yes) {
+							if (source->sin_titulo) {
+								wxString fname = GetNameForSaveAs(source);
+								if (!fname.IsEmpty()) source->SaveSource(fname);
+							} else {
+								source->SaveSource();
+							}
+						}
+					} 
+					CloseSource(i);//notebook_sources->DeletePage(i);
+				}
+		}
+		if (project) { // eliminar el proyecto viejo de la memoria
+			delete project;
+		}
+		if (g_welcome_panel && notebook_sources->GetPageCount()==0) ShowWelcome(false);
+		// abrir el proyecto
+		project = new ProjectManager(filename);
+		
+		IF_THERE_IS_SOURCE CURRENT_SOURCE->SetFocus();
+		m_aui->Update();
+		// mostrar arbol de simbolos
+//		if (!left_panels && project) {
+//			symbols_tree.menuItem->Check(true);
+//			m_aui->GetPane(symbols_tree.treeCtrl).Show();
+//			m_aui->Update();
+//		}
+		
+		parser->ParseProject(true);
+		
+	} else { // si era otro archivo
+		// abrir el archivo
+		if (project && !project->FindFromFullPath(filename.GetFullPath())) {
+			// constantes para setear bits en *multiple
+			const int always_attach=1; // ojo, esto se usa en OnProjectTreeAdd, asi que si se cambia el valor/significado, hay que revisar tambien ahi
+			const int never_attach=2;
+			const int always_move=4;
+			const int never_move=8;
+			const int always_replace=16;
+			const int never_replace=32;
+			// ver si hay que adjuntarlo al proyecto además de abrirlo
+			bool attach=true;
+			if (multiple && (*multiple)&(always_attach|never_attach)) {
+				attach=(*multiple)&always_attach;
+			} else {
+				mxMessageDialog::mdAns ans1 = 
+					mxMessageDialog(main_window,LANG(MAINW_ADD_TO_PROJECT_QUESTION,"¿Desea agregar el archivo al proyecto?"))
+						.Check1(multiple?LANG(MAINW_ADD_TO_PROJECT_CHECK,"Hacer lo mismo para todos"):"",false)
+						.Title(filename.GetFullPath()).IconQuestion().ButtonsYesNo().Run();
+				attach = ans1.yes;
+				if (multiple && ans1.check1) (*multiple)|=(attach?always_attach:never_attach);
+			}
+			if (attach) {
+				// si no esta en la carpeta del proyecto, preguntar si hay que copiarlo ahí
+				wxString aux_project_path=project->path; aux_project_path.Replace("\\","/",true); if (aux_project_path.EndsWith("/")) aux_project_path.RemoveLast();
+				wxString aux_file_path=filename.GetFullPath(); aux_file_path.Replace("\\","/",true); if (aux_file_path.EndsWith("/")) aux_file_path.RemoveLast();
+#ifdef __WIN32__
+				aux_file_path.MakeLower();
+				aux_project_path.MakeLower();
+#endif
+				if (!aux_file_path.StartsWith(aux_project_path)) {
+					wxString dest_filename=DIR_PLUS_FILE(project->path,filename.GetFullName());
+					bool move=false;
+					if (multiple && (*multiple)&(always_move|never_move)) {
+						move=(*multiple)&always_move;
+					} else {
+						mxMessageDialog::mdAns ans2 =
+							mxMessageDialog(main_window,LANG(MAINW_MOVE_TO_PROJECT_PATH_QUESTION,""
+															 "El archivo que intenta agregar no se encuentra en el directorio del\n"
+															 "proyecto. ¿Desea copiar el archivo al directorio del proyecto?"))
+								.Check1(multiple?LANG(MAINW_ADD_TO_PROJECT_CHECK,"Hacer lo mismo para todos"):"",false)
+								.Title(filename.GetFullPath()).IconQuestion().ButtonsYesNo().Run();
+						move = ans2.yes;
+						if (multiple && ans2.check1) (*multiple)|=(move?always_move:never_move);
+					}
+					if (move && wxFileExists(dest_filename)) {
+						bool replace=false;
+						if (multiple && (*multiple)|(always_replace|never_replace)) {
+							replace=(*multiple)|always_replace;
+						} else {
+							mxMessageDialog::mdAns ans3 =
+								mxMessageDialog(main_window,LANG(MAINW_OVERWRITE_ON_PROJECT_PATH_QUESTION,""
+																 "El archivo ya existe en el directorio de proyecto.\n"																 "¿Desea reemplazarlo?"))
+									.Check1(multiple?LANG(MAINW_ADD_TO_PROJECT_CHECK,"Hacer lo mismo para todos"):"",true)
+									.Title(filename.GetFullPath()).IconQuestion().ButtonsYesNo().Run();
+							replace = ans3.yes;
+							if (multiple && ans3.check1) (*multiple)|=(replace?always_replace:never_replace);
+						}
+						if (!replace) move=false;
+					}
+					if (move) {
+						wxCopyFile(filename.GetFullPath(),DIR_PLUS_FILE(project->path,filename.GetFullName()));
+						filename=dest_filename;
+					}
+				}
+			}
+			OpenFile(filename.GetFullPath(),attach);
+		} else {
+			OpenFile(filename.GetFullPath());
+		}
+	}
+	// actualizar el historial de archivos abiertos recientemente
+	if (!project || filename.GetExt().CmpNoCase(PROJECT_EXT)==0)
+		UpdateInHistory(filename.GetFullPath(),filename.GetExt().CmpNoCase(PROJECT_EXT)==0);
+	status_bar->SetStatusText(LANG(GENERAL_READY,"Listo"));
+}
+	
+
+void mxMainWindow::OnFileOpen (wxCommandEvent &event) {
+	wxFileDialog dlg (this, "Abrir Archivo", project?project->last_dir:config->Files.last_dir, " ", "Any file (*)|*", wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
+	dlg.SetWildcard("Archivos de C/C++ y Proyectos|" WILDCARD_CPP_EXT "|Fuentes|" WILDCARD_SOURCE "|Cabeceras|" WILDCARD_HEADER "|Proyectos|" WILDCARD_PROJECT "|Todos los archivos|*");
+	if (dlg.ShowModal() == wxID_OK) {
+		if (project)
+			project->last_dir=dlg.GetDirectory();
+		else
+			config->Files.last_dir=dlg.GetDirectory();
+		wxArrayString paths;
+		dlg.GetPaths(paths);
+		int ans=0;
+		if (paths.GetCount()==1)
+			OpenFileFromGui(paths[0]);
+		else
+			for (unsigned int i=0;i<paths.GetCount();i++)
+				OpenFileFromGui(paths[i],&ans);
+	}
+}
+
+void mxMainWindow::OnFileSourceHistoryMore (wxCommandEvent &event) {
+	new mxOpenRecentDialog(this,false);
+}
+
+void mxMainWindow::OnFileProjectHistoryMore (wxCommandEvent &event) {
+	new mxOpenRecentDialog(this,true);
+}
+
+void mxMainWindow::OnFileSourceHistory (wxCommandEvent &event) {
+	OpenFileFromGui(wxString(config->Files.last_source[event.GetId()-mxID_FILE_SOURCE_HISTORY_0]));
+}
+
+void mxMainWindow::OnFileProjectHistory (wxCommandEvent &event) {
+	OpenFileFromGui(wxString(config->Files.last_project[event.GetId()-mxID_FILE_PROJECT_HISTORY_0]));
+}
+
+void mxMainWindow::OnFilePrint (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		if (!g_printDialogData) g_printDialogData=new wxPrintDialogData;
+		mxSource *src=CURRENT_SOURCE;
+		wxPrinter printer(g_printDialogData);
+		mxPrintOut printout(src,src->page_text);
+		src->SetPrintMagnification(config->Styles.print_size-config->Styles.font_size);
+		src->SetWrapVisualFlags(wxSTC_WRAPVISUALFLAG_NONE);
+		if (!printer.Print(this, &printout, true)) {
+			if (wxPrinter::GetLastError() == wxPRINTER_ERROR) {
+				mxMessageDialog(this,LANG(MAINW_ERROR_PRITING,"Ha ocurrido un error al intentar imprimir"))
+					.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+			}
+		}
+		src->SetWrapVisualFlags(wxSTC_WRAPVISUALFLAG_START|wxSTC_WRAPVISUALFLAG_END);
+//		(*pageSetupData) = * printData;
+//		wxPageSetupDialog pageSetupDialog(nullptr, pageSetupData);
+//		if (wxID_OK!=pageSetupDialog.ShowModal()) return;
+//		*printData = pageSetupDialog.GetPageSetupData().GetPrintData();
+//		*pageSetupData = pageSetupDialog.GetPageSetupData();	
+		
+//		wxPrintDialogData g_printDialogData(*printData);
+//		wxPrinter printer(&g_printDialogData);
+//		if (!printer.Print(this, &printout, true)) {
+//			if (wxPrinter::GetLastError() == wxPRINTER_ERROR)
+//				mxMessageDialog(this,"Ha ocurrido un error al intentar imprimir").Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+//		} else
+//			(*printData) = printer.GetPrintDialogData().GetPrintData();
+	}
+}
+
+void mxMainWindow::OnFileNewProject (wxCommandEvent &event) {
+	mxNewWizard::GetInstance()->RunWizard("new_project");
+}
+
+void mxMainWindow::OnFileNew (wxCommandEvent &event) {
+	if (project) {
+		mxNewWizard::GetInstance()->RunWizard("on_project");
+	} else 
+		switch (config->Init.new_file){
+			case 0:
+				NewFileFromText("");
+				break;
+			case 1:
+				main_window->NewFileFromTemplate(config->Files.default_template);
+				break;
+			default: {
+				mxNewWizard::GetInstance()->RunWizard();
+				break;
+			}
+		}	
+}
+
+mxSource *mxMainWindow::NewFileFromText (wxString text, wxString name, int pos) {
+	if (g_welcome_panel && notebook_sources->GetPageCount()==0) ShowWelcome(false);
+	mxSource* source = new mxSource(notebook_sources, AvoidDuplicatePageText(name));
+	source->AppendText(text);
+	source->MoveCursorTo(pos);
+	source->SetLineNumbers();
+	notebook_sources->AddPage(source, name ,true, *bitmaps->files.blank);
+	if (!project) {
+		wxTreeItemId tree_item = project_tree.AddFile(name,FT_SOURCE);
+		source->SetTreeItem(tree_item);
+	}
+	source->SetModify(false);
+	source->SetFocus();
+	return source;
+}
+
+mxSource *mxMainWindow::NewFileFromText (wxString text, int pos) {
+	return NewFileFromText(text,SIN_TITULO,pos);
+}
+
+mxSource *mxMainWindow::NewFileFromTemplate(wxString filename, bool is_full_path) {
+	if (project) {
+		mxMessageDialog(this,LANG(MAINW_CANT_OPEN_TEMPLATE_WHILE_PROJECT,""
+								  "No puede abrir un ejemplo mientras trabaja en un proyecto.\n"
+								  "Cierre el proyecto e intente nuevamente."))
+			.Title(LANG(GENERAL_WARNING,"Advertencia")).IconWarning().Run();
+		return nullptr;
+	}
+	if (g_welcome_panel && notebook_sources->GetPageCount()==0) ShowWelcome(false);
+	mxSource* source = new mxSource(notebook_sources, SIN_TITULO);
+	
+	wxString full_path = is_full_path ? filename : mxUT::WichOne(filename,"templates",true);
+	
+	// parse template options
+	SimpleTemplates::Initialize(); // ensures g_templates!=nullptr
+	map<wxString,wxString> temp_opts;
+	int header_lines = g_templates->GetOptions(temp_opts,full_path);
+	
+	// copy the file's content (without header) to source
+	wxTextFile file(full_path);
+	if (!file.Exists() && filename!="default_14.tpl") return NewFileFromTemplate("default_14.tpl");
+	file.Open();
+	if (file.IsOpened()) {
+		wxString line = file.GetFirstLine();
+		for(int i=0;i<header_lines-1;i++) line = file.GetNextLine();
+		while (!file.Eof()) source->AppendText(file.GetNextLine()+"\n");
+		file.Close();
+	}
+	
+	// define some basic source's settings
+	source->SetLineNumbers();
+	notebook_sources->AddPage(source, LAST_TITULO ,true, *bitmaps->files.blank);
+	if (!project) {
+		wxTreeItemId tree_item = project_tree.AddFile(LAST_TITULO,FT_SOURCE);
+		source->SetTreeItem(tree_item);
+	}
+	source->MoveCursorTo(0,false); // to avoid start with non-zero vertical scrolling on very short templates
+	source->SetModify(false);
+	
+	// apply other template dependat options
+	if (temp_opts.count("Caret")) {
+		long l; 
+		if (temp_opts["Caret"].ToLong(&l))
+			source->MoveCursorTo(l,true);
+	} else {
+		source->SetFocus();
+	}
+	if (temp_opts.count("Type") && temp_opts["Type"]=="C") {
+		source->cpp_or_just_c=false;
+		source->temp_filename.SetExt("c");
+	}
+	source->SetCompilerOptions(temp_opts["Options"]); 
+	
+	return source;
+}
+
+void mxMainWindow::OnFileSaveProject (wxCommandEvent &event) {
+	if (project) project->Save();
+}
+
+void mxMainWindow::OnFileSave (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *src = CURRENT_SOURCE;
+		if (src->sin_titulo)
+			OnFileSaveAs(event);
+		else {
+			src->SaveSource();
+			project_file_item *fi;
+			if ( !project || ((fi=project->FindFromName(src->source_filename.GetFullPath())) && fi->ShouldBeParsed()) )
+				parser->ParseSource(CURRENT_SOURCE,true);
+		} 
+	}
+}
+
+void mxMainWindow::OnFileSaveAs (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE  {
+		mxSource *source=CURRENT_SOURCE;
+		wxString fname = GetNameForSaveAs(source);
+		if (fname.IsEmpty()) return;
+		wxFileName file = fname;
+#ifndef __WIN32__
+		// acentos en paths, no en nombres de archivos porque esos los detecta el file-picker
+		if (file.GetFullPath().IsEmpty()) { // problems due to ansi-wx on utf8-linux
+			mxMessageDialog(this,LANG(MAINW_CANT_PROBLEM_WITH_ACCENTS_ON_LOAD,""
+									  "El nombre del archivo o de algún directorio en su ruta\n"
+									  "contiene acentos u otro caracteres especiales. En este\n"
+									  "sistema ZinjaI no puede guardar correctamente los\n"
+									  "cambios del archivo a menos que modifique su nombre o ruta."))
+				.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+			OnFileSaveAs(event);
+			return;
+		}
+#endif
+		if (!project) {
+			if (file.GetExt().Len()==0) {
+				bool do_add = config->Init.always_add_extension;
+				if (!do_add) {
+					mxMessageDialog::mdAns res =
+						mxMessageDialog(this,LANG(MAINW_NO_EXTENSION_ADD_CPP_QUESTION,""
+												  "No ha definido una extension en el nombre de archivo indicado.\n"
+												  "Si es un codigo fuente se recomienda utilizar la extension cpp\n"
+												  "para que el compilador pueda identificar el lenguaje.\n"
+												  "Desea agregar la extension cpp al nombre?"))
+							.Check1(LANG(MAINW_ALWAYS_APPEND_EXTENSION,"Siempre agregar la extension sin preguntar."),false)
+							.Title(LANG(GENERAL_WARNING,"Advertencia")).ButtonsYesNo().Run();
+					if (res.check1)
+						config->Init.always_add_extension=true;
+					do_add=res.yes;
+				}
+				if (do_add)
+					file.SetExt(source->IsCppOrJustC()?"cpp":"c");
+			}
+		}
+		if (source->SaveSource(file)) {
+			parser->RenameFile(source->GetFullPath(),file.GetFullPath());
+			wxString filename = file.GetFullName();
+			eFileType ftype=mxUT::GetFileType(filename);
+			source->SetPageText(filename);
+			if (project)
+				project->last_dir=file.GetPath();
+			else
+				config->Files.last_dir=file.GetPath();
+			if (!project) {
+				if (ftype==FT_SOURCE) {
+					notebook_sources->SetPageBitmap(notebook_sources->GetSelection(),*bitmaps->files.source);
+					source->SetStyle(wxSTC_LEX_CPP);
+					if (project_tree.treeCtrl->GetItemParent(source->GetTreeItem())!=project_tree.sources) {
+						project_tree.treeCtrl->Delete(source->GetTreeItem());
+						wxTreeItemId tree_item = project_tree.treeCtrl->AppendItem(project_tree.sources, filename, 1);
+						source->SetTreeItem(tree_item);
+					} else
+						project_tree.treeCtrl->SetItemText(source->GetTreeItem(),filename);
+					project_tree.treeCtrl->Expand(project_tree.sources);
+				} else if (ftype==FT_HEADER) {
+					notebook_sources->SetPageBitmap(notebook_sources->GetSelection(),*bitmaps->files.header);
+					source->SetStyle(wxSTC_LEX_CPP);
+					if (project_tree.treeCtrl->GetItemParent(source->GetTreeItem())!=project_tree.headers) {
+						project_tree.treeCtrl->Delete(source->GetTreeItem());
+						wxTreeItemId tree_item = project_tree.treeCtrl->AppendItem(project_tree.headers, filename, 2);
+						source->SetTreeItem(tree_item);
+					} else
+						project_tree.treeCtrl->SetItemText(source->GetTreeItem(),filename);
+					project_tree.treeCtrl->Expand(project_tree.headers);
+				} else {
+					wxString ext=file.GetExt();
+					notebook_sources->SetPageBitmap(notebook_sources->GetSelection(),*bitmaps->files.other);
+					if (ext=="HTM" || ext=="HTML")
+						source->SetStyle(wxSTC_LEX_HTML);
+					else if (ext=="XML")
+						source->SetStyle(wxSTC_LEX_XML);
+					else if (ext=="SH")
+						source->SetStyle(wxSTC_LEX_BASH);
+					else if (file.GetName().MakeUpper()=="MAKEFILE")
+						source->SetStyle(wxSTC_LEX_MAKEFILE);
+					if (project_tree.treeCtrl->GetItemParent(source->GetTreeItem())!=project_tree.others) {
+						project_tree.treeCtrl->Delete(source->GetTreeItem());
+						wxTreeItemId tree_item = project_tree.treeCtrl->AppendItem(project_tree.others, filename, 3);
+						source->SetTreeItem(tree_item);
+						project_tree.treeCtrl->Expand(project_tree.others);
+					} else {
+						project_tree.treeCtrl->SetItemText(source->GetTreeItem(),filename);
+					}
+				}
+			}
+			if (!project) {
+				UpdateInHistory(file.GetFullPath(),false);
+				parser->ParseSource(source,true);
+			}
+/*			if (symbols_tree.menuItem->IsChecked())
+				parser->ParseSource(source);*/
+		}
+		if (wxFileName(file.GetPath())==explorer_tree.path) 
+			SetExplorerPath(explorer_tree.path);
+	}
+}
+
+void mxMainWindow::UpdateSymbols () {
+	if (project) {
+		project->UpdateSymbols();
+//		project->SaveAll(false);
+	} else
+		IF_THERE_IS_SOURCE
+			parser->ParseSource(CURRENT_SOURCE);
+//			parser->ParseFile(CURRENT_SOURCE->source_filename);
+}
+
+void mxMainWindow::OnSocketEvent(wxSocketEvent &event){
+	if (g_share_manager) g_share_manager->OnSocketEvent(&event);
+}
+
+void mxMainWindow::OnParseSourceTime(wxTimerEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		if (!project && (source->never_parsed || source->GetModify()))
+			parser->ParseSource(source);
+	}
+}
+
+void mxMainWindow::OnParseOutputTime(wxTimerEvent &event) {
+	compile_and_run_struct_single *compile_and_run=compiler->compile_and_run_single;
+	while (compile_and_run) {
+		if (compile_and_run->process)
+			compiler->ParseSomeErrors(compile_and_run);
+		compile_and_run=compile_and_run->next;
+	}
+}
+
+
+
+
+
+void mxMainWindow::OnFoldFold(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		int line = source->GetCurrentLine();
+		if (source->GetFoldExpanded(line)) {
+			source->ToggleFold(line);
+		}
+	}
+}
+void mxMainWindow::OnFoldUnFold(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		int line = source->GetCurrentLine();
+		if (!source->GetFoldExpanded(line)) {
+			source->ToggleFold(line);
+		}
+	}
+}
+
+void mxMainWindow::OnFoldShow1(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(1,false);
+}
+void mxMainWindow::OnFoldShow2(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(2,false);
+}
+void mxMainWindow::OnFoldShow3(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(3,false);
+}
+void mxMainWindow::OnFoldShow4(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(4,false);
+}
+void mxMainWindow::OnFoldShow5(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(5,false);
+}
+void mxMainWindow::OnFoldShowAll(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(0,false);
+}
+
+void mxMainWindow::OnFoldHide1(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(1,true);
+}
+void mxMainWindow::OnFoldHide2(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(2,true);
+}
+void mxMainWindow::OnFoldHide3(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(3,true);
+}
+void mxMainWindow::OnFoldHide4(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(4,true);
+}
+void mxMainWindow::OnFoldHide5(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(5,true);
+}
+void mxMainWindow::OnFoldHideAll(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE
+		CURRENT_SOURCE->SetFolded(0,true);
+}
+
+static wxString GetOneInclude(const wxString &path, const wxString &key, wxString *match_this_namespace, wxString *namespace_out) {
+	wxArrayString headers;
+	g_code_helper->GetInclude(path,key,true,&headers);
+	if (!headers.GetCount()) return "";
+	int cual = -1;
+	if (match_this_namespace && !match_this_namespace->IsEmpty()) {
+		// si hay varios, ver si en alguno coincide el namespace y si no dar a elegir
+		for(size_t i=0;i<headers.GetCount();i++) {
+			if (*match_this_namespace==headers[i].AfterFirst('|')) {
+				cual = i; break;
+			}
+		}
+	}
+	if (cual==-1 && headers.GetCount()>1) {
+		// si no matcheo ninguno, o hay mas de uno, dar a elegir
+		wxArrayString vaux; for(size_t i=0;i<headers.GetCount();i++) vaux.Add(headers[i].BeforeFirst('|'));
+		wxString res = wxGetSingleChoice("Select header","Insert #include",vaux,main_window);
+		if (res.IsEmpty()) return "";
+		cual = vaux.Index(res);
+	} else cual = 0;
+	if (namespace_out) (*namespace_out) = headers[cual].AfterFirst('|'); 
+	return headers[cual].BeforeFirst('|');
+}
+
+/// @brief inserta el include correspondiente a la palabra sobre el cursor si lo conoce y no estaba
+void mxMainWindow::OnEditInsertInclude(wxCommandEvent &event) {
+	_record_this_action_in_macro(event.GetId());
+	IF_THERE_IS_SOURCE {
+		mxSource *source=CURRENT_SOURCE;
+		// separar la palabra
+		int pos=source->GetCurrentPos();
+		char c = source->GetCharAt(pos);
+		while (pos && !IsKeywordChar(c) && c!=')' && c!='>') {
+			c = source->GetCharAt(--pos);
+		}
+		if (c==')') {
+			int p2=source->BraceMatch(pos); // si esta en un parentesis que cierrar, puede ser donde termina una funcion, buscar el nombre
+			if (p2!=wxSTC_INVALID_POSITION) pos=p2-1;
+			c = source->GetCharAt(pos);
+		}
+		if (c=='>') { // si es template, saltear argumentos
+			int p2=SkipTemplateSpecBack(source,pos); 
+			if (p2!=wxSTC_INVALID_POSITION) pos=p2;
+			c = source->GetCharAt(pos);
+		}
+//		if (pos<0) { // si no hay palabra quejarse
+//			mxMessageDialog(main_window,LANG(MAINW_INSERT_HEADIR_NO_WORD,"Debe colocar el cursor de texto sobre el nombre de la clase que desee incluir."),LANG(GENERAL_ERROR,"Error"),mxMD_OK|mxMD_INFO).ShowModal();
+//			return;
+//		}
+		int keyw_start=source->WordStartPosition(pos,true);
+		int keyw_end=source->WordEndPosition(pos,true);
+		wxString key = source->GetTextRange(keyw_start,keyw_end);
+		
+		if (key.Len()==0) { // si no hay palabra quejarse
+			mxMessageDialog(main_window,LANG(MAINW_INSERT_HEADIR_NO_WORD,""
+											 "Debe colocar el cursor de texto sobre el\n"
+											 "nombre de la clase que desee incluir."))
+				.Title(LANG(GENERAL_ERROR,"Error")).IconInfo().Run();
+			return;
+		} else { // conseguir el h y darselo al source para que haga lo que corresponda
+			
+			wxString user_namespace; // si el código tiene explícito el namespace, va aca
+			if (keyw_start>2 && source->GetCharAt(keyw_start-1)==':'&&source->GetCharAt(keyw_start-2)==':')
+				user_namespace = source->GetTextRange(source->WordStartPosition(keyw_start-3,true),keyw_start-2);
+			wxString path = source->sin_titulo?wxString(""):source->source_filename.GetPathWithSep();
+			
+			wxString optional_namespace, header = GetOneInclude(path,key,&user_namespace,&optional_namespace);
+			if (!header.IsEmpty()) {
+				if (user_namespace==optional_namespace) optional_namespace.Clear();
+			} else {
+				mxSource::StcTypeInfo tinfo = source->FindTypeOfByPos(keyw_end-1);
+				if ( tinfo.IsOk() ) {
+					header = GetOneInclude(path,tinfo.type,nullptr,nullptr);
+				} else { // buscar el scope y averiguar si es algo de la clase
+					wxString type = source->FindScope(keyw_start);
+					int s;
+					if (type.Len()) {
+						type = g_code_helper->GetAttribType(type,key,s);
+						if (!type.Len())
+							type=g_code_helper->GetGlobalType(key,s);
+					} else {
+						type=g_code_helper->GetGlobalType(key,s);
+					}
+					if (type.Len()) header = GetOneInclude(path,type,nullptr,nullptr);
+				}
+			}
+			if (header.Len()) {
+				if (mxUT::GetFileType(header)==FT_SOURCE) {
+					mxMessageDialog(main_window,key+LANG(MAINW_INSERT_HEADIR_CPP," esta declarada en un archivo fuente.\n"
+														 "Solo deben realizarse #includes para archivos de cabecera."))
+						.Title(LANG(GENERAL_ERROR,"Error")).IconInfo().Run();
+				} else {
+					header.Replace("\\","/");
+					source->AddInclude(header,optional_namespace);
+				}
+			} else if (key=="Clippo") {
+				new mxSplashScreen(clpeg,GetPosition().x+GetSize().x-215,GetPosition().y+GetSize().y-230);
+			} else {
+				mxMessageDialog(main_window,LANG1(MAINW_NO_HEADER_FOR,"No se encontro cabecera correspondiente a \"<{1}>\".",key))
+					.Title(LANG(GENERAL_ERROR,"Error")).IconWarning().Run();
+			}
+		}
+	}
+}
+
+void mxMainWindow::OnViewNotebookNext(wxCommandEvent &evt){
+	unsigned int i=notebook_sources->GetSelection();
+	i++; 
+	if (i>=notebook_sources->GetPageCount())
+		i=0;
+	notebook_sources->SetSelection(i);
+}
+
+void mxMainWindow::OnViewNotebookPrev(wxCommandEvent &evt){
+	int i=notebook_sources->GetSelection();
+	i--; 
+	if (i<0)
+		i=notebook_sources->GetPageCount()-1;
+	notebook_sources->SetSelection(i);
+}
+
+wxStatusBar* mxMainWindow::OnCreateStatusBar(int number, long style, wxWindowID id, const wxString& name) {
+	status_bar = new mxStatusBar(this, id, style, name);
+	SetStatusBarFields();
+	return status_bar;
+}
+
+
+void mxMainWindow::OnDebugAttach ( wxCommandEvent &event ) {
+	if (!main_window->notebook_sources->GetPageCount() && !project) return;
+	long dpid=0;
+	wxArrayString options;
+	wxString otro="<<<Otro>>>",cual;
+	if (!dpid) mxUT::GetRunningChilds(options);
+	options.Add(cual=otro);
+	if (options.GetCount()>1) {
+		cual=wxGetSingleChoice("Process:",_menu_item_2(mnDEBUG,mxID_DEBUG_ATTACH)->GetPlainLabel(),options,this,-1,-1,true);
+		if (!cual.Len()) return;
+	}
+	if (cual==otro) 
+		mxGetTextFromUser("PID:",_menu_item_2(mnDEBUG,mxID_DEBUG_ATTACH)->GetPlainLabel(),"",this).ToLong(&dpid);
+	else
+		cual.BeforeFirst(' ').ToLong(&dpid);
+	if (!dpid) return;
+	wxString command = wxString("attach ")<<dpid;
+	wxString message = LANG1(DEBUG_STATUS_ATTACHED_TO,"Depurador adjuntado al proceso <{[1]}>. Ejecución pausada.",(wxString()<<dpid));
+	debug->SpecialStart(project?nullptr:CURRENT_SOURCE,command,message,false);
+	if (debug->IsDebugging()) debug->SetChildPid(dpid);
+}
+
+void mxMainWindow::OnDebugTarget ( wxCommandEvent &event ) {
+	static wxString target;
+	wxString new_target = DebugTargetCommon(target,false);
+	if (new_target.Len()) target=new_target;
+}
+
+wxString mxMainWindow::DebugTargetCommon (wxString target, bool should_continue) {
+	if (!main_window->notebook_sources->GetPageCount() && !project) return "";
+	target = mxGetTextFromUser("Target (arguments for gdb's target command):",_menu_item_2(mnDEBUG,mxID_DEBUG_ATTACH)->GetPlainLabel(),target,this);
+	if (target.Len()) {
+		wxString command = wxString("target ")<<target;
+		wxString message = LANG(DEBUG_STATUS_TARGET_DONE,"Depuración iniciada correctamente.");
+		debug->SpecialStart(project?nullptr:CURRENT_SOURCE,command,message,should_continue);
+	}
+	return target;
+}
+
+
+/** 
+* inicia la depuracion ejecutando el programa
+* o reanuda la depuracion si ya estaba en proceso pero interrumpida
+**/
+void mxMainWindow::OnDebugRun( wxCommandEvent &event ) {
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->HideCalltip();
+	if (debug->IsDebugging()) {
+		if (debug->IsPaused())
+			debug->Continue();
+	} else {
+		SetCompilingStatus("Preparando depuración...");
+		ZLINF("MainWindow","OnDebugRun wxYield:in");
+		wxYield();
+		ZLINF("MainWindow","OnDebugRun wxYield:out");
+		if (project) {
+			if (project->active_configuration->exec_method==EMETHOD_SCRIPT) { // if the script launches the executable, we can only attach the debugger to it
+				OnDebugAttach(event);
+				return;
+			}
+			debug->Start(config->Debug.compile_again);
+		} else IF_THERE_IS_SOURCE {
+			mxSource *src = master_source?master_source:CURRENT_SOURCE;
+			_LAMBDA_1( lmbDebugSource, mxSource*,src, { EnvVars::SetMode(EnvVars::DEBUGGING); debug->Start(src); } );
+			if (config->Debug.compile_again) {
+				CompileSource(false,new lmbDebugSource(src));
+			} else {
+				lmbDebugSource(src).Run();
+			}
+		}
+	}
+//	st->Destroy();
+}
+
+void mxMainWindow::OnDebugPause ( wxCommandEvent &event ) {
+	debug->Pause();
+}
+
+void mxMainWindow::OnDebugContinue ( wxCommandEvent &event ) {
+	debug->Continue();
+}
+
+
+void mxMainWindow::OnDebugStop ( wxCommandEvent &event ) {
+	if (!debug->IsDebugging())
+		OnRunStop(event);
+	else
+		debug->Stop();
+}
+
+void mxMainWindow::OnDebugUpdateInspections ( wxCommandEvent &event ) {
+	if (!debug->IsDebugging()) return;
+	if (debug->IsPaused()) debug->UpdateInspections();
+	_DEBUG_LAMBDA_0( lmbUpdateInspections, { debug->UpdateInspections(); } );
+	debug->PauseFor(new lmbUpdateInspections());
+}
+
+void mxMainWindow::OnDebugInspect ( wxCommandEvent &event ) {
+	if (m_aui->ToggleFromMenu(PaneId::Inspections))
+		inspection_ctrl->SetFocus();
+}
+
+void mxMainWindow::OnDebugBacktrace ( wxCommandEvent &event ) {
+	if (m_aui->ToggleFromMenu(PaneId::Backtrace)) {
+		debug->UpdateBacktrace(false);
+		backtrace_ctrl->SetFocus();
+	}
+}
+
+void mxMainWindow::OnDebugThreadList ( wxCommandEvent &event ) {
+	if (m_aui->ToggleFromMenu(PaneId::Threads)) {
+		debug->threadlist_visible=true;
+		debug->UpdateThreads();
+		threadlist_ctrl->SetFocus();
+	}
+}
+
+void mxMainWindow::OnDebugStepIn ( wxCommandEvent &event ) {
+	debug->StepIn();
+}
+
+void mxMainWindow::OnDebugStepOver ( wxCommandEvent &event ) {
+	debug->StepOver();
+}
+
+void mxMainWindow::OnDebugReturn ( wxCommandEvent &event ) {
+	if (debug->CanTalkToGDB()) {
+		wxString res;
+		if (mxGetTextFromUser(res,LANG(DEBUG_RETURN_VALUE,"Valor de retorno:"), LANG(DEBUG_RETURN_FROM_FUNCTION,"Salir de la función") , "", this))
+			debug->Return(res);
+	}
+}
+
+void mxMainWindow::OnDebugJump ( wxCommandEvent &event ) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		debug->Jump(source->GetFullPath(),source->GetCurrentLine());
+	}
+}
+
+void mxMainWindow::OnDebugRunUntil ( wxCommandEvent &event ) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		if (!debug->RunUntil(source->GetFullPath(),source->GetCurrentLine())) {
+			mxMessageDialog(main_window,LANG(DEBUG_RUN_UNTIL_ERROR,"La dirección actual no es válida."))
+				.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+		}
+	}
+}
+
+void mxMainWindow::OnDebugListWatchpoints ( wxCommandEvent &event ) {
+	
+}
+
+void mxMainWindow::OnDebugListBreakpoints ( wxCommandEvent &event ) {
+	new mxBreakList();
+}
+
+void mxMainWindow::OnDebugInsertWatchpoint ( wxCommandEvent &event ) {
+	
+}
+
+void mxMainWindow::OnDebugToggleBreakpoint ( wxCommandEvent &event ) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		wxStyledTextEvent evt;
+		evt.SetMargin(1);
+		evt.SetPosition(source->GetCurrentPos());
+		source->OnMarginClick(evt);
+	}
+	
+}
+
+void mxMainWindow::OnDebugEnableDisableBreakpoint ( wxCommandEvent &event ) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		BreakPointInfo *bpi = source->m_extras->FindBreakpointFromLine(source,source->GetCurrentLine());
+		if (!bpi) return;
+		bpi->SetEnabled(!bpi->enabled); // gui and bpi state
+		if (debug->IsDebugging() && bpi->IsInGDB())
+			debug->LiveSetBreakPointEnable(bpi); // debugger state
+	}
+}
+
+void mxMainWindow::OnDebugBreakpointOptions ( wxCommandEvent &event ) {
+	IF_THERE_IS_SOURCE {
+		mxSource *source=CURRENT_SOURCE;
+		if (!debug->IsDebugging() || debug->CanTalkToGDB()) {
+			
+			// buscar si habia un breakpoint en esa linea
+			int l = source->LineFromPosition (source->GetCurrentPos());
+			BreakPointInfo *bpi = source->m_extras->FindBreakpointFromLine(source,l);
+			
+			if (!bpi) { // si no habia, lo crea
+				bpi=new BreakPointInfo(source,l);
+				if (debug->IsDebugging()) debug->SetBreakPoint(bpi);
+			}
+			new mxBreakOptions(bpi); // muestra el dialogo de opciones del bp
+		}
+	}
+}
+
+void mxMainWindow::OnDebugStepOut ( wxCommandEvent &event ) {
+	debug->StepOut();
+}
+
+
+void mxMainWindow::OnDebugDoThat ( wxCommandEvent &event ) {
+	static wxString what;
+	wxString res = mxGetTextFromUser("Comando:", "Comandos internos" , what, this);
+	if (res=="help") {
+		wxMessageBox ("errorsave, kboom, wxlog on, wxlog off, gdb cmd, gdb ans, dbg <file>/win/off, log win, log msg <group>");
+	} else if (res.StartsWith("dbglog ")||res.StartsWith("dbg ")) {
+		wxString arg=res.AfterFirst(' ');
+		if (arg=="off") _DBG_LOG_ST_CALL(UnSet());
+		else if (arg=="win"||arg=="panel") {
+			struct mxDbgLogWin : public DebuggerTalkLogger {
+				wxTextCtrl *ctrl;
+				mxDbgLogWin() { 
+					ctrl = new wxTextCtrl(main_window,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE);
+					main_window->m_aui->AttachGenericPane(ctrl,"GDB log",true)->Top().Dock();
+				}
+				void Open() { ctrl->Clear(); }
+				void Close() {}
+				void Log(const wxString &s) { ctrl->AppendText(s); ctrl->SetSelection(ctrl->GetValue().Len(),ctrl->GetValue().Len()); }
+			};
+			_DBG_LOG_ST_CALL(Set(new mxDbgLogWin()));
+		}
+		else {
+			struct mxDbgLogFile : public DebuggerTalkLogger {
+				wxString fname;
+				wxFFile file;
+				mxDbgLogFile(const wxString &f):fname(f){}
+				void Open() { file.Open(fname,"w+"); }
+				void Close() { file.Close(); }
+				void Log(const wxString &s) { file.Write(s); file.Flush(); }
+			};
+			_DBG_LOG_ST_CALL(Set(new mxDbgLogFile(arg)));
+		}
+	} else if (res=="log panel"||res=="log win") {
+		struct mxZLogPanel : public ZLog, public wxTextCtrl {
+//			wxTextCtrl *ctrl;
+			mxZLogPanel() : ZLog("mxZLogPanel"), wxTextCtrl(main_window,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE) {
+				main_window->m_aui->AttachGenericPane(this,"ZinjaI log",true)->Top().Dock();
+			}
+			void DoLog(ZLog::Level lvl, const char *grp, const wxString &str) { 
+				wxString msg = GetString(lvl,grp,str);
+				if (!msg.IsEmpty()) {
+					this->AppendText(msg+"\n"); 
+					this->SetSelection(this->GetValue().Len(),this->GetValue().Len()); 
+				}
+			}
+		};
+		new mxZLogPanel();
+	} else if (res.StartsWith("log msg ")) {
+		struct mxZLogMessageBox : public ZLog {
+			wxString filter;
+			mxZLogMessageBox(wxString p) : ZLog("mxZLogMessageBox"), filter(p) { }
+			void DoLog(ZLog::Level lvl, const char *grp, const wxString &str) {
+				if (filter==grp) {
+					wxString msg = GetString(lvl,grp,str);
+					if (!msg.IsEmpty()) wxMessageBox(msg);
+				}
+			}
+		};
+		new mxZLogMessageBox(res.AfterFirst(' ').AfterFirst(' '));
+	} else if (res=="gdb cmd") {
+		wxMessageBox (debug->last_command);
+	} else if (res=="gdb ans") {
+		wxMessageBox (debug->last_answer.full);
+	} else if (res=="errorsave") {
+		er_sigsev(11);
+	} else if (res=="wxlog on") {
+		wxLog::SetActiveTarget(new wxLogGui());
+		SetStatusText("DoThat: usando wxLogGui");
+	} else if (res=="wxlog off") {
+		wxLog::SetActiveTarget(new wxLogStderr());
+		SetStatusText("DoThat: usando wxLogStrerr");
+	} else if (res=="kboom") {
+		int *p=nullptr;
+		// cppcheck-suppress nullPointer
+		cout<<*p;
+	} else {
+		SetStatusText("Unknown command");
+	}
+}
+
+void mxMainWindow::ShowInQuickHelpPanel(wxString &res, bool hide_compiler_tree) {
+	quick_help->SetPage(res);
+	m_aui->Show(PaneId::QuickHelp,true);
+	if (hide_compiler_tree) m_aui->Hide(PaneId::Compiler);
+}
+
+void mxMainWindow::LoadInQuickHelpPanel(wxString file, bool hide_compiler_tree) {
+	quick_help->LoadPage(file);
+	m_aui->Show(PaneId::QuickHelp,true);
+	if (hide_compiler_tree) m_aui->Hide(PaneId::Compiler);
+}
+
+
+void mxMainWindow::PrepareGuiForDebugging(bool debug_mode) {
+	
+	mxAUIFreezeGuard m_aui_freeze(*m_aui);
+	
+	gui_debug_mode=debug_mode;
+	
+	// habilitar y deshabilitar cosas en los menues
+	menu_data->SetDebugMode(debug_mode); 
+	
+	wxCommandEvent evt;
+	if (debug_mode) { // si comienza la depuracion...
+#ifndef __WIN32__
+		_menu_item(mxID_DEBUG_INVERSE_EXEC)->Check(false);
+		_menu_item(mxID_DEBUG_ENABLE_INVERSE_EXEC)->Check(false);
+		_get_toolbar(tbDEBUG)->EnableTool(mxID_DEBUG_INVERSE_EXEC,false);
+		_get_toolbar(tbDEBUG)->ToggleTool(mxID_DEBUG_INVERSE_EXEC,false);
+		_get_toolbar(tbDEBUG)->ToggleTool(mxID_DEBUG_ENABLE_INVERSE_EXEC,false);
+#endif
+		_get_toolbar(tbDEBUG)->ToggleTool(mxID_DEBUG_INSPECT_ON_MOUSE_OVER,config->Debug.inspect_on_mouse_over);
+		_get_toolbar(tbDEBUG)->ToggleTool(mxID_DEBUG_RETURN_FOCUS_ON_CONTINUE,config->Debug.return_focus_on_continue);
+		
+		if (!config->Debug.allow_edition) { // no permitir editar los fuentes durante la depuracion
+			for (unsigned int i=0;i<notebook_sources->GetPageCount();i++) 
+				((mxSource*)(notebook_sources->GetPage(i)))->SetReadOnlyMode(ROM_DEBUG,true);
+		}
+
+		if (config->Debug.autohide_toolbars) { // reacomodar las barras de herramientas
+			m_aui->GetPane(_get_toolbar(tbSTATUS)).Show();
+			
+#define _aux_pfd_2(NAME) \
+			{ wxMenuItem *mitem = _menu_item(mxID_VIEW_TOOLBAR_##NAME); \
+			if (mitem->IsChecked()) { mitem->Check(false); m_aui->GetPane(_get_toolbar(tb##NAME)).Hide(); } }
+#define _aux_pfd_2_not(NAME) \
+			{ wxMenuItem *mitem = _menu_item(mxID_VIEW_TOOLBAR_##NAME); \
+			if (!mitem->IsChecked()) { mitem->Check(true); m_aui->GetPane(_get_toolbar(tb##NAME)).Show(); } }
+			
+			_aux_pfd_2(FILE);
+			_aux_pfd_2(EDIT);
+			_aux_pfd_2(VIEW);
+			_aux_pfd_2(RUN);
+			_aux_pfd_2_not(DEBUG);
+			_aux_pfd_2(TOOLS);
+			_aux_pfd_2(MISC);
+			_aux_pfd_2(FIND);
+			if (project) _aux_pfd_2(PROJECT);
+		}
+		
+		m_aui->OnDebugStart();
+		
+	} else { // si finaliza la depuracion
+		
+		// reestablecer la edicion de fuentes
+		for (unsigned int i=0;i<notebook_sources->GetPageCount();i++)
+			((mxSource*)(notebook_sources->GetPage(i)))->SetReadOnlyMode(ROM_DEBUG,false);
+		
+		if (config->Debug.autohide_toolbars) { // reacomodar las barras de herramientas
+			m_aui->GetPane(_get_toolbar(tbSTATUS)).Hide();
+			if (gui_fullscreen_mode) {
+				_menu_item(mxID_VIEW_TOOLBAR_DEBUG)->Check(false); m_aui->GetPane(_get_toolbar(tbDEBUG)).Hide();
+			} else {
+			#define _aux_pfd_1(NAME) \
+				if (_toolbar_visible(tb##NAME)) { _menu_item(mxID_VIEW_TOOLBAR_##NAME)->Check(true); m_aui->GetPane(_get_toolbar(tb##NAME)).Show(); } \
+				else { _menu_item(mxID_VIEW_TOOLBAR_##NAME)->Check(false); m_aui->GetPane(_get_toolbar(tb##NAME)).Hide(); }
+				_aux_pfd_1(DEBUG);
+				_aux_pfd_1(FILE);
+				_aux_pfd_1(EDIT);
+				_aux_pfd_1(VIEW);
+				_aux_pfd_1(RUN);
+				_aux_pfd_1(TOOLS);
+				_aux_pfd_1(MISC);
+				_aux_pfd_1(FIND);
+				if (project) { _aux_pfd_1(PROJECT); }
+				_aux_pfd_1(DEBUG);
+			}
+		}
+		
+		m_aui->OnDebugEnd();
+		
+	}
+	
+}
+
+/// @brief muestra en que funcion/clase estamos (Ctrl+Shift+Space)
+void mxMainWindow::OnWhereAmI(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *src=CURRENT_SOURCE;
+		if (src->config_source.syntaxEnable) {
+			wxString where;
+			if (!src->sin_titulo) {
+				wxFileName fname=src->source_filename;
+				fname.Normalize();
+				where<<fname.GetFullPath()<<" - "<<LANG(FIND_LINE,"linea")<<" "<<src->GetCurrentLine()+1<<" col "<<
+					src->GetCurrentPos()-src->PositionFromLine(src->GetCurrentLine())+1<<"\n";
+			}
+			where<<src->WhereAmI();
+			src->ShowBaloon(where);
+		}
+	}
+}
+
+/**
+* esta funcion es un parche para windows, que le da el foco al fuente 
+* despues de que se hizo doble click en el error en el panel compiler_output,
+* ya que utilizar el metodo SetFocus en el evento no funciona en Windows
+* porque los eventos de click y foco sse procesan en orden invertido
+* respecto a como lo hacen en linux
+**/
+void mxMainWindow::SetFocusToSource() {
+//	main_window->Raise();
+	IF_THERE_IS_SOURCE 
+		CURRENT_SOURCE->SetFocus();
+}
+
+void mxMainWindow::OnGotoToolbarFind (wxCommandEvent &evt) {
+	if (FindFocus()==menu_data->toolbar_find_text)
+		FocusToSource();
+	else
+		menu_data->toolbar_find_text->SetFocus();
+}
+
+void mxMainWindow::OnToolbarFindEnter (wxCommandEvent &evt) {
+	wxString stext = menu_data->toolbar_find_text->GetValue();
+	if (stext.Len()==0)
+		return;
+	if (!project && stext=="Cuack Attack!") { // are you looking for a duck?
+		menu_data->toolbar_find_text->SetValue("");
+		NewFileFromText(_T(
+"#include <iostream>\n#include <cstdlib>\n#include <ctime>\nusing namespace std;\n"
+"char *cuack() {\nstatic char cuack[] = \"cuack\";\nfor (int i=0;i<4;i++)\nif (rand()%2)\ncuack[i]=cuack[i]|32;\nelse\ncuack[i]=cuack[i]&(~32);\nreturn cuack;\n}\n"
+"int main(int argc, char *argv[]) {\nsrand(time(NULL));\nwhile (true) {\nclock_t t1=clock();\nwhile (clock()==t1);\ncout<<string(rand()%50,' ')<<cuack()<<\"!\"<<endl;\n}\nreturn 0;\n}"
+			),"Cuack Attack!");
+		wxYield();
+		CURRENT_SOURCE->OnEditSelectAll(evt);
+		CURRENT_SOURCE->OnIndentSelection(evt);
+		OnRunRun(evt);
+		return;
+	}
+	if (stext=="vim mode") {
+		GetMenuBar()->GetMenu(0)->Remove(mxID_FILE_EXIT);
+		EnableCloseButton(false);
+		wxMessageBox("Vim mode activated");
+	} else if (!project && stext=="moonwalk") { // are you looking for a duck?
+		NewFileFromText("\n\n\n\n\n\n\n");
+		parser_timer->Stop();
+		wxYield();
+		mxSource *src=CURRENT_SOURCE;
+		src->SetModify(false);
+		int delay=200;
+		int tabs_count = notebook_sources->GetPageCount();
+		for (int i=0;i<20;i++) {
+			wxString s("\n"), d(i,' ');
+			s<<d<<" _A_\n"<<d<<"  O \n"<<d<<"  |\\\n"<<d<<"  |/\n";
+			if (i%4==0)	s<<d<<" /|\n"<<d<<" \\|\n";
+			if (i%4==1) s<<d<<" /|\n"<<d<<" ||\n";
+			if (i%4==2) s<<d<<" /|\n"<<d<<"/ |\n";
+			if (i%4==3) s<<d<<" /|\n"<<d<<" |\\\n";
+			src->SetText(s); wxYield();	wxMilliSleep(delay);
+			if (tabs_count != int(notebook_sources->GetPageCount())) return;
+		}
+		wxString d(23,' ');
+		src->SetText(wxString()<<"\n"<<d<<" _A_\n"<<d<<"  O |\n"<<d<<" /|/\n"<<d<<" || \n"<<d<<" / \\\n"<<d<<" | |\n");
+		wxYield(); wxMilliSleep(delay*2);
+		src->SetText(wxString()<<"\n"<<d<<"\\\n"<<d<<" \\O \n"<<d<<"  |\\\n"<<d<<"  |_A_\n"<<d<<" / \\\n"<<d<<" | |\n");
+		wxYield(); wxMilliSleep(delay*3);
+		src->SetModify(false);
+		OnFileClose(evt);
+		return;
+	}
+	IF_THERE_IS_SOURCE {
+		bool invert = wxGetKeyState(WXK_SHIFT);
+		mxSource *source = CURRENT_SOURCE;
+		int p0 = invert ? source->GetLength() : 0, 
+			ps = invert ? source->GetSelectionStart() : source->GetSelectionEnd(),
+			pN = invert ? 0 : source->GetLength();
+		int pos = source->FindText(ps,pN,menu_data->toolbar_find_text->GetValue(),0);
+		if (pos==wxSTC_INVALID_POSITION) 
+			pos = source->FindText(p0,ps+stext.Len(),menu_data->toolbar_find_text->GetValue(),0);
+		if (pos!=wxSTC_INVALID_POSITION) {
+			source->EnsureVisibleEnforcePolicy(source->LineFromPosition(pos));
+			source->SetSelection(pos,pos+stext.Len());
+		}
+	}
+}
+
+void mxMainWindow::OnToolbarFindChange (wxCommandEvent &evt) {
+	wxString stext = menu_data->toolbar_find_text->GetValue();
+	if (stext.Len()==0)
+		return;
+	IF_THERE_IS_SOURCE {
+		mxSource *source = CURRENT_SOURCE;
+		int pos = source->FindText(source->GetSelectionStart(),source->GetLength(),menu_data->toolbar_find_text->GetValue(),0);
+		if (pos==wxSTC_INVALID_POSITION) 
+			pos = source->FindText(0,source->GetSelectionStart()+stext.Len(),menu_data->toolbar_find_text->GetValue(),0);
+		if (pos!=wxSTC_INVALID_POSITION) {
+			source->EnsureVisibleEnforcePolicy(source->LineFromPosition(pos));
+			source->SetSelection(pos,pos+stext.Len());
+		}
+	}
+}
+
+void mxMainWindow::OnHelpUpdates(wxCommandEvent &evt) {
+	new mxUpdatesChecker();
+}
+
+void mxMainWindow::SetExplorerPath(wxString path) {
+	if (!project) config->Files.last_dir=path;
+	explorer_tree.treeCtrl->Freeze();
+//	explorer_tree.treeCtrl->DeleteChildren(explorer_tree.root);
+	explorer_tree.treeCtrl->DeleteAllItems();
+	explorer_tree.root = explorer_tree.treeCtrl->AddRoot("Archivos Abiertos", 0);
+	{ // fix dir if it doesn't exists
+		wxFileName fn(DIR_PLUS_FILE(path,"."));
+		while (fn.GetDirCount()>0 && !fn.DirExists()) fn.RemoveLastDir(); 
+//		if (fn.GetDirCount()==0) fn = (project?project->path:wxFileName::GetHomeDir());
+		path = fn.GetPath();
+	}
+	explorer_tree.treeCtrl->SetItemText(explorer_tree.root,path);
+	explorer_tree.path = path;
+	wxDir dir(path);
+	if ( dir.IsOpened() ) {
+		wxString filename;
+		wxString spec;
+		wxArrayString as;
+		for( bool cont = dir.GetFirst(&filename, spec , wxDIR_DIRS); cont ; cont = dir.GetNext(&filename) ) {
+			as.Add(filename);
+		}	
+		as.Sort();
+		for (unsigned int i=0;i<as.GetCount();i++)
+			explorer_tree.treeCtrl->AppendItem(explorer_tree.root,as[i],0);
+		as.Clear();
+		for (bool cont = dir.GetFirst(&filename, spec , wxDIR_FILES); cont; cont = dir.GetNext(&filename)) {
+			as.Add(filename);
+		}
+		as.Sort();
+		for (unsigned int i=0;i<as.GetCount();i++) {
+			eFileType ctype=mxUT::GetFileType(as[i]);
+			int t=4;
+			if (ctype==FT_SOURCE)	t=1;
+			else if (ctype==FT_HEADER) t=2;
+			else if (ctype==FT_PROJECT) t=5;
+			if (!explorer_tree.show_only_sources || t<3)
+				explorer_tree.treeCtrl->AppendItem(explorer_tree.root,as[i],t);
+		}	
+	}
+//	explorer_tree.treeCtrl->SortChildren(explorer_tree.root);
+	explorer_tree.treeCtrl->SelectItem(explorer_tree.root);
+	explorer_tree.treeCtrl->SetFocus();
+	explorer_tree.treeCtrl->Expand(explorer_tree.root);
+	explorer_tree.treeCtrl->Thaw();
+}
+
+void mxMainWindow::OnSelectExplorerItem (wxTreeEvent &event) {
+	explorer_tree.selected_item = event.GetItem();
+	if (explorer_tree.selected_item==explorer_tree.root) {
+		wxDirDialog dlg(this,"Seleccione la ubicación:",explorer_tree.path);
+		if (wxID_OK==dlg.ShowModal()) {
+			SetExplorerPath(dlg.GetPath());
+			config->Files.last_dir = dlg.GetPath();
+		}
+	} else {
+		if (explorer_tree.treeCtrl->GetChildrenCount(explorer_tree.selected_item)) {
+			SetExplorerPath(GetExplorerItemPath(explorer_tree.selected_item));
+		} else {
+			wxCommandEvent evt;
+			OnExplorerTreeOpenOneZinjaI(evt);
+		}
+	}
+	
+}
+
+void mxMainWindow::OnExplorerTreePopup(wxTreeEvent &event) {
+	
+	mxHidenPanelIgnoreGuard ignore_autohide;
+	
+	explorer_tree.selected_item = event.GetItem();
+	
+	wxMenu menu("");
+	if (explorer_tree.selected_item==explorer_tree.root) {
+		menu.Append(mxID_EXPLORER_POPUP_CHANGE_PATH, LANG(MAINW_EXPLORER_POPUP_CHANGE_PATH,"&Cambiar Ubicación..."));
+		menu.Append(mxID_EXPLORER_POPUP_PATH_UP, LANG(MAINW_EXPLORER_POPUP_LEVEL_UP,"&Subir un Nivel"));
+		if (notebook_sources->GetPageCount())
+			menu.Append(mxID_FILE_EXPLORE_FOLDER, LANG(MAINW_EXPLORER_POPUP_TAKE_FROM_SOURCE,"Tomar Ubicación del Archivo Abierto"));
+		if (!explorer_tree.show_only_sources)
+			menu.Append(mxID_EXPLORER_POPUP_OPEN_ALL, LANG(MAINW_EXPLORER_POPUP_OPEN_ALL,"&Abrir Todos los Archivos"));
+		menu.Append(mxID_EXPLORER_POPUP_OPEN_SOURCES, LANG(MAINW_EXPLORER_POPUP_OPEN_SOURCES,"Abrir &Todos los Fuentes"));
+		menu.Append(mxID_EXPLORER_POPUP_UPDATE, LANG(MAINW_EXPLORER_POPUP_UPDATE,"Ac&tualizar"));
+	} else {
+		if (explorer_tree.treeCtrl->GetItemImage(explorer_tree.selected_item)) {
+			menu.Append(mxID_EXPLORER_POPUP_OPEN_ONE_ZINJAI, LANG(MAINW_EXPLORER_POPUP_OPEN_FILE_ZINJAI,"&Abrir (en ZinjaI)"));
+			menu.Append(mxID_EXPLORER_POPUP_OPEN_ONE_EXTERN, LANG(MAINW_EXPLORER_POPUP_OPEN_FILE_EXTERN,"&Abrir (externo)"));
+		} else {
+			menu.Append(mxID_EXPLORER_POPUP_OPEN_ONE_ZINJAI, LANG(MAINW_EXPLORER_POPUP_EXPAND,"&Expandir"));
+			menu.Append(mxID_EXPLORER_POPUP_UPDATE, LANG(MAINW_EXPLORER_POPUP_UPDATE,"Ac&tualizar"));
+			if (!explorer_tree.show_only_sources)
+				menu.Append(mxID_EXPLORER_POPUP_OPEN_ALL, LANG(MAINW_EXPLORER_POPUP_OPEN_ALL,"&Abrir Todos los Archivos"));
+			menu.Append(mxID_EXPLORER_POPUP_OPEN_SOURCES, LANG(MAINW_EXPLORER_POPUP_OPEN_SOURCES,"Abrir &Todos los Fuentes"));
+			menu.Append(mxID_EXPLORER_POPUP_SET_AS_PATH, LANG(MAINW_EXPLORER_POPUP_SET_AS_ROOT,"Utilizar Como &Raiz"));
+		}
+	}
+	menu.AppendSeparator();
+	if (explorer_tree.show_only_sources)
+		menu.Append(mxID_EXPLORER_POPUP_SHOW_ONLY_SOURCES, LANG(MAINW_EXPLORER_POPUP_SHOW_ALL,"&Mostrar Todos los Archivos"));
+	else
+		menu.Append(mxID_EXPLORER_POPUP_SHOW_ONLY_SOURCES, LANG(MAINW_EXPLORER_POPUP_SHOW_SOURCES,"&Mostrar Solo los Fuentes"));
+	
+	explorer_tree.treeCtrl->PopupMenu(&menu,event.GetPoint());	
+	
+}
+
+void mxMainWindow::OnExplorerTreeUpdate(wxCommandEvent &evt) {
+	if (explorer_tree.selected_item==explorer_tree.root)
+		SetExplorerPath(explorer_tree.path);
+	else {
+		wxCommandEvent evt;
+		OnExplorerTreeOpenOneZinjaI(evt);
+	}
+}
+
+void mxMainWindow::OnExplorerTreeChangePath(wxCommandEvent &evy) {
+	wxDirDialog dlg(this,LANG(MAINW_EXPLORER_SELECT_PATH,"Seleccione la ubicación:"),explorer_tree.path);
+	if (wxID_OK==dlg.ShowModal()) {
+		SetExplorerPath(dlg.GetPath());
+		config->Files.last_dir = dlg.GetPath();
+	}
+}
+
+void mxMainWindow::OnExplorerTreePathUp(wxCommandEvent &evy) {
+	for (int i=explorer_tree.path.Len()-2;i>=0;i--) {
+		if ((explorer_tree.path[i]=='\\' || explorer_tree.path[i]=='/') && (i==0 || explorer_tree.path[i]!=':')) {
+			explorer_tree.path=explorer_tree.path.Mid(0,i==0?1:i);
+			break;
+		}
+	}
+	SetExplorerPath(explorer_tree.path);
+}
+
+void mxMainWindow::OnExplorerTreeOpenOneZinjaI(wxCommandEvent &evt) {
+	
+	wxString path = GetExplorerItemPath(explorer_tree.selected_item);
+	if (explorer_tree.treeCtrl->GetItemImage(explorer_tree.selected_item)) {
+		OpenFileFromGui(path);
+#ifdef __WIN32__
+		SetFocusToSourceAfterEvents();
+#endif
+	} else {
+		
+		explorer_tree.treeCtrl->Freeze();
+		explorer_tree.treeCtrl->DeleteChildren(explorer_tree.selected_item);
+		wxDir dir(path);
+		if ( dir.IsOpened() ) {
+			wxString filename;
+			wxString spec;
+			wxArrayString as;
+			bool cont = dir.GetFirst(&filename, spec , wxDIR_DIRS);
+			while ( cont ) {
+				as.Add(filename);
+				cont = dir.GetNext(&filename);
+			}	
+			as.Sort();
+			for (unsigned int i=0;i<as.GetCount();i++)
+				explorer_tree.treeCtrl->AppendItem(explorer_tree.selected_item,as[i],0);
+			as.Clear();
+			cont = dir.GetFirst(&filename, spec , wxDIR_FILES);
+			while ( cont ) {
+				as.Add(filename);
+				cont = dir.GetNext(&filename);
+			}
+			as.Sort();
+			for (unsigned int i=0;i<as.GetCount();i++) {
+				eFileType ctype=mxUT::GetFileType(as[i]);
+				int t=4;
+				if (ctype==FT_SOURCE) t=1;
+				else if (ctype==FT_HEADER) t=2;
+				else if (ctype==FT_PROJECT) t=5;
+				if (!explorer_tree.show_only_sources || (t==1||t==2))
+					explorer_tree.treeCtrl->AppendItem(explorer_tree.selected_item,as[i],t);
+			}	
+		}
+		//			explorer_tree.treeCtrl->SortChildren(explorer_tree.selected_item);
+		explorer_tree.treeCtrl->Thaw();	
+		explorer_tree.treeCtrl->Expand(explorer_tree.selected_item);
+		wxYield();
+	}
+	
+}
+
+void mxMainWindow::OnExplorerTreeOpenOneExtern(wxCommandEvent &evt) {
+	wxString path = GetExplorerItemPath(explorer_tree.selected_item);
+	mxUT::ShellExecute(path,wxFileName(path).GetFullPath());
+}
+
+void mxMainWindow::OnExplorerTreeSetAsPath(wxCommandEvent &evt) {
+	SetExplorerPath(GetExplorerItemPath(explorer_tree.selected_item));
+}
+
+void mxMainWindow::OnExplorerTreeOpenAll(wxCommandEvent &evt) {
+	if (!explorer_tree.treeCtrl->GetChildrenCount(explorer_tree.selected_item)) {
+		wxCommandEvent evt;
+		OnExplorerTreeOpenOneZinjaI(evt);
+	}
+	wxString path = GetExplorerItemPath(explorer_tree.selected_item);
+	wxTreeItemIdValue cookie;
+	wxTreeItemId item = explorer_tree.treeCtrl->GetFirstChild(explorer_tree.selected_item,cookie);
+	while (item.IsOk()) {
+		if (explorer_tree.treeCtrl->GetItemImage(item)!=0 && explorer_tree.treeCtrl->GetItemImage(item)!=5) // 0=folder, 5=zpr
+			OpenFileFromGui(DIR_PLUS_FILE(path,explorer_tree.treeCtrl->GetItemText(item)));
+		item = explorer_tree.treeCtrl->GetNextChild(explorer_tree.selected_item,cookie);
+	}
+}
+
+void mxMainWindow::OnExplorerTreeOpenSources(wxCommandEvent &evt) {
+	if (!explorer_tree.treeCtrl->GetChildrenCount(explorer_tree.selected_item)) {
+		wxCommandEvent evt;
+		OnExplorerTreeOpenOneZinjaI(evt);
+	}
+	wxString path = GetExplorerItemPath(explorer_tree.selected_item);
+	wxTreeItemIdValue cookie;
+	wxTreeItemId item = explorer_tree.treeCtrl->GetFirstChild(explorer_tree.selected_item,cookie);
+	while (item.IsOk()) {
+		if (explorer_tree.treeCtrl->GetItemImage(item)!=0 && explorer_tree.treeCtrl->GetItemImage(item)<3)
+			OpenFileFromGui(DIR_PLUS_FILE(path,explorer_tree.treeCtrl->GetItemText(item)));
+		item = explorer_tree.treeCtrl->GetNextChild(explorer_tree.selected_item,cookie);
+	}
+}
+
+void mxMainWindow::OnExplorerTreeShowOnlySources(wxCommandEvent &evt) {
+	explorer_tree.show_only_sources = ! explorer_tree.show_only_sources;
+	SetExplorerPath(explorer_tree.path);
+}
+
+wxString mxMainWindow::GetExplorerItemPath(wxTreeItemId item) {
+	if (explorer_tree.root==item)
+		return explorer_tree.path;
+	wxTreeItemId parent = explorer_tree.treeCtrl->GetItemParent(item);
+	wxString path = explorer_tree.treeCtrl->GetItemText(item);
+	while (parent!=explorer_tree.root) {
+		path = DIR_PLUS_FILE(explorer_tree.treeCtrl->GetItemText(parent),path);
+		parent = explorer_tree.treeCtrl->GetItemParent(parent);
+	}
+	path = DIR_PLUS_FILE(explorer_tree.path,path);	
+	return path;
+}
+
+void mxMainWindow::OnSymbolsGenerateAutocompletionIndex(wxCommandEvent &evt) {
+	
+	if (!parser->last_file->next) {
+		mxMessageDialog(main_window,LANG(MAINW_GENERATE_AUTOCOMP_INDEX_EMPTY,"No hay fuentes para generar el índice. Abra uno \n"
+																			 "o más archivos para que ZinjaI analice y extraiga \n"
+																			 "los símbolos que conformarán el nuevo índice"))
+			.Title(LANG(MAINW_GENERATE_AUTOCOMP_INDEX_CAPTION,"Generación de índice de autocompletado")).IconError().Run();
+	}
+	
+	wxString fname = wxGetTextFromUser(
+		LANG(MAINW_GENERATE_AUTOCOMP_INDEX_NAME,"Nombre del nuevo índice"),
+		LANG(MAINW_GENERATE_AUTOCOMP_INDEX_CAPTION,"Generación de índice de autocompletado"),
+		"",this);
+	if (!fname.Len()) return;
+	fname=DIR_PLUS_FILE_2(config->config_dir,"autocomp",fname);
+	if (wxFileName::FileExists(fname)) {
+		if ( mxMessageDialog(main_window,LANG(MAINW_GENERATE_AUTOCOMP_INDEX_OVERWRITE,"El indice ya existe, ¿desea reemplazarlo?"))
+			.Title(LANG(MAINW_GENERATE_AUTOCOMP_INDEX_CAPTION,"Generación de índice de autocompletado")).ButtonsYesNo().IconQuestion().Run().no )
+		{
+			return;
+		}
+	}
+	
+	// buscar un buen valor por defecto para "diretorio base", buscando la parte
+	// inicial comun al path de todos los archivos que van a parar al indice
+	wxString def_dir="<NULL>";
+	pd_file *fil = parser->last_file->next;
+	while (fil) {
+		wxFileName fn(fil->name); fn.Normalize();
+		wxString new_path = fn.GetPath();
+		if (def_dir=="<NULL>") def_dir=new_path;
+		else {
+			unsigned int i=0;
+			while (i<def_dir.Len() && i<new_path.Len() && def_dir[i]==new_path[i]) 
+				i++; 
+			def_dir=def_dir.Mid(0,i);
+		}
+		fil = fil->next;
+	}
+	
+	wxDirDialog dlg2(this,LANG(MAINW_GENERATE_AUTOCOMP_INDEX_BASEDIR,"Directorio base (para formar las rutas relativas para los #includes):"),def_dir);
+	if (wxID_OK!=dlg2.ShowModal()) return;
+	if (g_code_helper->GenerateAutocompletionIndex(dlg2.GetPath(),fname)) {
+		mxMessageDialog(main_window,LANG(MAINW_GENERATE_AUTOCOMP_INDEX_GENERATED,"Indice generado correctamente."))
+			.Title(LANG(MAINW_GENERATE_AUTOCOMP_INDEX_CAPTION,"Generación de índice de autocompletado")).IconInfo().Run();
+		mxPreferenceWindow::Delete();
+	} else {
+		mxMessageDialog(main_window,LANG(MAINW_GENERATE_AUTOCOMP_INDEX_ERROR,"Ha ocurrido un error al intentar generar el archivo."))
+			.Title(LANG(MAINW_GENERATE_AUTOCOMP_INDEX_CAPTION,"Generación de índice de autocompletado")).IconError().Run();
+	}
+}
+
+
+void mxMainWindow::OnEditListMarks (wxCommandEvent &event) {
+	if (project) {
+		
+		for (int i=notebook_sources->GetPageCount()-1;i>=0;i--)
+			((mxSource*)(notebook_sources->GetPage(i)))->UpdateExtras();
+		
+		wxString res("<HTML><HEAD><TITLE>Lineas Resaltadas</TITLE></HEAD><BODY><B>Lineas Resaltadas:</B><BR><UL>");
+		wxString restmp;
+		
+		GlobalListIterator<project_file_item*> fi(&project->files.all);
+		while (fi.IsValid()) {
+			const SingleList<int> &markers_list = fi->GetSourceExtras().GetHighlightedLines();
+			restmp="";
+			for(int i=0;i<markers_list.GetSize();i++)
+				restmp=wxString("<LI><A href=\"gotoline:") << fi->GetFullPath()<<":"<<markers_list[i]+1<<"\">"<< fi->GetRelativePath() <<": linea "<<markers_list[i]+1<<"</A></LI>"<<restmp;
+			res<<restmp;	
+			fi.Next();
+		}
+		
+		res<<"</UL><BR><BR></BODY></HTML>";
+		main_window->ShowInQuickHelpPanel(res);	
+	} else {
+		wxString res("<HTML><HEAD><TITLE>Lineas Resaltadas</TITLE></HEAD><BODY><B>Lineas Resaltadas:</B><BR><UL>");
+		for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+			mxSource *src= (mxSource*)(notebook_sources->GetPage(i));
+			for (int k=0;k<src->GetLineCount();k++) {
+				wxString file_name = src->sin_titulo?src->page_text:src->source_filename.GetFullPath();
+				wxString page_text = mxUT::ToHtml(src->page_text);
+				if (src->MarkerGet(k)&1<<mxSTC_MARK_USER)
+					res<<"<LI><A href=\"gotoline:"<<file_name<<":"<<k+1<<"\">"<<page_text<<": linea "<<k+1<<"</A></LI>";
+			}
+		}
+		res<<"</UL><BR><BR></BODY></HTML>";
+		main_window->ShowInQuickHelpPanel(res);	
+	}
+}
+
+void mxMainWindow::OnFileProjectConfig (wxCommandEvent &event) {
+	if (project) new mxProjectGeneralConfig;
+}
+
+wxString mxMainWindow::AvoidDuplicatePageText(wxString ptext) {
+	wxString text=ptext;
+	int n=1,i=0,np=notebook_sources->GetPageCount();
+	while (true) {
+		while (i<np && ((mxSource*)(notebook_sources->GetPage(i)))->page_text!=text) i++;
+		if (i<np) {
+			n++;
+			text=ptext;
+			text<<"("<<n<<")";
+			i=0;
+		} else
+			return text;
+	}
+	return text;
+}
+
+void mxMainWindow::OnDebugPatch (wxCommandEvent &event) {
+	_LAMBDA_0( lmbDebugPatch , { debug->Patch(); } );
+	if (project) compiler->BuildOrRunProject(false, new lmbDebugPatch);
+	else main_window->CompileSource(false, new lmbDebugPatch);
+}
+
+void mxMainWindow::OnDebugCoreDump (wxCommandEvent &event) {
+	if (notebook_sources->GetPageCount()>0||project) {
+		if (!debug->IsDebugging() && (project || notebook_sources->GetPageCount())) {
+			wxString dir = project?DIR_PLUS_FILE(project->path,project->active_configuration->working_folder):CURRENT_SOURCE->working_folder.GetFullPath();
+			wxFileDialog dlg (this, _menu_item_2(mnDEBUG,mxID_DEBUG_LOAD_CORE_DUMP)->GetPlainLabel(), dir, " ", "Core dumps|core*|Todos los Archivos|*", wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+			if (dlg.ShowModal() == wxID_OK)
+				debug->LoadCoreDump(dlg.GetPath(),project?nullptr:CURRENT_SOURCE);
+		} else if (debug->CanTalkToGDB()) {
+			wxString sPath = project?project->path:(CURRENT_SOURCE->GetPath(true));
+			wxFileDialog dlg (this, _menu_item_2(mnDEBUG,mxID_DEBUG_SAVE_CORE_DUMP)->GetPlainLabel(),sPath,"core", "Any file (*)|*", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+			dlg.SetDirectory(sPath);
+			dlg.SetWildcard("Core dumps|core*|Todos los Archivos|*");
+			if (dlg.ShowModal() == wxID_OK)
+				debug->SaveCoreDump(dlg.GetPath());
+		}
+	}
+}
+
+void mxMainWindow::SetOpenedFileName(wxString name) {
+	SetTitle(wxString("ZinjaI - ")+name);
+}
+
+void mxMainWindow::OnKeyEvent(wxWindow *who, wxKeyEvent &evt) {
+	if (evt.GetKeyCode()==WXK_ESCAPE) {
+		if (m_aui->OnKeyEscape(who)) return;
+	}
+	if (who==project_tree.treeCtrl && project) {
+		project_tree.selected_item = project_tree.treeCtrl->GetSelection();
+		if (evt.GetKeyCode()==WXK_MENU) {
+			wxTreeEvent te;
+			te.SetItem(project_tree.selected_item);
+			wxRect r;
+			project_tree.treeCtrl->GetBoundingRect(project_tree.selected_item,r,true);
+			wxPoint p(r.GetX()+r.GetHeight(),r.GetY()+r.GetHeight());
+			te.SetPoint(p);
+			OnProjectTreePopup(te);
+		} else if (project_tree.selected_item==project_tree.sources || project_tree.selected_item==project_tree.headers || project_tree.selected_item==project_tree.others) {
+			wxCommandEvent cmd;
+			project_tree.selected_parent = project_tree.selected_item;
+			if (evt.GetKeyCode()==WXK_INSERT) OnProjectTreeAdd(cmd);
+			else evt.Skip();
+		} else {
+			project_tree.selected_parent=project_tree.selected_item;
+			wxCommandEvent cmd;
+			if (evt.GetKeyCode()==WXK_DELETE) OnProjectTreeDelete(cmd);
+			else evt.Skip();
+		}
+	} else if (who==explorer_tree.treeCtrl) {
+		explorer_tree.selected_item=explorer_tree.treeCtrl->GetSelection();
+		if (evt.GetKeyCode()==WXK_MENU) {
+			wxTreeEvent te;
+			te.SetItem(explorer_tree.selected_item);
+			wxRect r;
+			explorer_tree.treeCtrl->GetBoundingRect(explorer_tree.selected_item,r,true);
+			wxPoint p(r.GetX()+r.GetHeight(),r.GetY()+r.GetHeight());
+			te.SetPoint(p);
+			OnExplorerTreePopup(te);
+		} else if (evt.GetKeyCode()==WXK_LEFT) {
+			explorer_tree.treeCtrl->Collapse(explorer_tree.selected_item);
+		} else if (evt.GetKeyCode()==WXK_RIGHT) {
+			if (explorer_tree.selected_item==explorer_tree.root) {
+				explorer_tree.treeCtrl->Expand(explorer_tree.root);
+			} else {
+				wxTreeEvent te;
+				te.SetItem(explorer_tree.selected_item);
+				OnSelectExplorerItem(te);
+				explorer_tree.treeCtrl->Expand(explorer_tree.selected_item);
+			}
+		} else if (evt.GetKeyCode()==WXK_BACK) {
+			if (explorer_tree.selected_item==explorer_tree.root) {
+				wxCommandEvent evt;
+				OnExplorerTreePathUp(evt);
+			} else {
+				explorer_tree.treeCtrl->SelectItem(explorer_tree.treeCtrl->GetItemParent(explorer_tree.selected_item));
+			}
+		} else
+			evt.Skip();
+	} else evt.Skip();
+}
+
+void mxMainWindow::ShowWelcome(bool show) {
+	mxAUIFreezeGuard m_aui_freeze(*m_aui);
+	wxAuiPaneInfo &pns = m_aui->GetPane(notebook_sources);
+	wxAuiPaneInfo &pwp = m_aui->GetPane(g_welcome_panel);
+	if (show) {
+		pns.Hide();
+		pwp.Show();
+		m_aui->OnWelcomePanelShow();
+		g_welcome_panel->Reload();
+	} else {
+		pwp.Hide();
+		pns.Show();
+		m_aui->OnWelcomePanelHide();
+	}
+	if ((g_welcome_panel->is_visible=show)) g_welcome_panel->SetFocus();
+}
+
+void mxMainWindow::OnActivate (wxActivateEvent &event) {
+	if (project) project->WxfbAutoCheckStep1();
+	event.Skip();
+}
+
+void mxMainWindow::OnKey(wxKeyEvent &evt) {
+	evt.Skip();
+}
+
+void mxMainWindow::OnProjectTreeProperties (wxCommandEvent &event) {
+	wxString fname;
+	if (project_tree.selected_item.IsOk()) {
+		fname = project->GetNameFromItem(project_tree.selected_item);
+	} else {
+		IF_THERE_ISNT_SOURCE return;
+		fname = CURRENT_SOURCE->source_filename.GetFullPath();
+	}
+	mxExeInfo::RunForSource(this,fname);
+}
+
+void mxMainWindow::OnProjectTreeOpenFolder (wxCommandEvent &event) {
+	wxString path;
+	if (project_tree.selected_item.IsOk()) {
+		path = wxFileName(project->GetNameFromItem(project_tree.selected_item)).GetPath();
+	} else {
+		IF_THERE_ISNT_SOURCE return;
+		path = CURRENT_SOURCE->source_filename.GetPath();
+	}
+	mxUT::OpenFolder(path);
+}
+
+void mxMainWindow::OnFileOpenFolder(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *src=CURRENT_SOURCE;
+		mxUT::OpenFolder(src->GetPath());
+	}
+}
+
+void mxMainWindow::OnFileExploreFolder(wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *src=CURRENT_SOURCE;
+		SetExplorerPath(src->GetPath());
+		ShowExplorerTreePanel();
+	}
+}
+
+void mxMainWindow::OnFileProperties (wxCommandEvent &event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *src=CURRENT_SOURCE;
+		mxExeInfo::RunForSource(this,src);
+	}
+}
+
+void mxMainWindow::OnViewNextError (wxCommandEvent &event) {
+	if (current_toolchain.IsExtern()) { extern_compiler_output->OnErrorNext(); return; }
+	wxTreeCtrl *t = compiler_tree.treeCtrl;
+	wxTreeItemId ip,it = t->GetSelection();
+	if (!it.IsOk() || it==compiler_tree.root || it==compiler_tree.state) it=ip=compiler_tree.root; else {
+		ip=t->GetItemParent(it);
+		while (ip!=compiler_tree.root && ip!=compiler_tree.errors && ip!=compiler_tree.all && ip!=compiler_tree.warnings) {
+			it=ip;
+			ip=t->GetItemParent(it);
+		}
+	}
+	wxTreeItemIdValue c;
+	if (it==compiler_tree.root || it==compiler_tree.errors || it==compiler_tree.all || ip==compiler_tree.all) {
+		if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetFirstChild(compiler_tree.errors,c);
+		else if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetFirstChild(compiler_tree.warnings,c);
+		else it=compiler_tree.root;
+	} else if (it==compiler_tree.warnings) {
+		if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetFirstChild(compiler_tree.warnings,c);
+		else if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetFirstChild(compiler_tree.errors,c);
+		else it=compiler_tree.root;
+	} else if (ip==compiler_tree.errors) {
+		it = t->GetNextSibling(it);
+		if (!it.IsOk()) {
+			if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetFirstChild(compiler_tree.warnings,c);
+			else if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetFirstChild(compiler_tree.errors,c);
+			else it=compiler_tree.root;
+		}
+	} else if (ip==compiler_tree.warnings) {
+		it = t->GetNextSibling(it);
+		if (!it.IsOk()) {
+			if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetFirstChild(compiler_tree.errors,c);
+			else if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetFirstChild(compiler_tree.warnings,c);
+			else it=compiler_tree.root;
+		}
+	}
+	if (it!=compiler_tree.root) {
+		t->Expand(t->GetItemParent(it));
+		t->Expand(it);
+		t->SelectItem(it);
+		wxTreeEvent evt;
+		evt.SetItem(it);
+		OnSelectError(evt);
+	}
+}
+
+void mxMainWindow::OnViewPrevError (wxCommandEvent &event) {
+	if (current_toolchain.IsExtern()) { extern_compiler_output->OnErrorPrev(); return; }
+	wxTreeCtrl *t = compiler_tree.treeCtrl;
+	wxTreeItemId ip,it = t->GetSelection();
+	if (!it.IsOk() || it==compiler_tree.root || it==compiler_tree.state) it=ip=compiler_tree.root; else {
+		ip=t->GetItemParent(it);
+		while (ip!=compiler_tree.root && ip!=compiler_tree.errors && ip!=compiler_tree.all && ip!=compiler_tree.warnings) {
+			it=ip;
+			ip=t->GetItemParent(it);
+		}
+	}
+	if (it==compiler_tree.root || it==compiler_tree.errors || it==compiler_tree.all || ip==compiler_tree.all) {
+		if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetLastChild(compiler_tree.warnings);
+		else if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetLastChild(compiler_tree.errors);
+		else it=compiler_tree.root;
+	} else if (it==compiler_tree.warnings) {
+		if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetLastChild(compiler_tree.errors);
+		else if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetLastChild(compiler_tree.warnings);
+		else it=compiler_tree.root;
+	} else if (ip==compiler_tree.errors) {
+		it = t->GetPrevSibling(it);
+		if (!it.IsOk()) {
+			if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetLastChild(compiler_tree.warnings);
+			else if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetLastChild(compiler_tree.errors);
+			else it=compiler_tree.root;
+		}
+	} else if (ip==compiler_tree.warnings) {
+		it = t->GetPrevSibling(it);
+		if (!it.IsOk()) {
+			if (t->GetChildrenCount(compiler_tree.errors)) it=t->GetLastChild(compiler_tree.errors);
+			else if (t->GetChildrenCount(compiler_tree.warnings)) it=t->GetLastChild(compiler_tree.warnings);
+			else it=compiler_tree.root;
+		}
+	}
+	if (it!=compiler_tree.root) {
+		t->Expand(t->GetItemParent(it));
+		t->Expand(it);
+		t->SelectItem(it);
+		wxTreeEvent evt;
+		evt.SetItem(it);
+		OnSelectError(evt);
+	}
+}
+
+void mxMainWindow::OnDebugShowLogPanel (wxCommandEvent &event) {
+	m_aui->ToggleFromMenu(PaneId::DebugMsgs);
+}
+
+void mxMainWindow::OnDebugInspectOnMouseOver (wxCommandEvent &event) {
+	wxToolBar *toolbar_debug = _get_toolbar(tbDEBUG);
+	config->Debug.inspect_on_mouse_over = !config->Debug.inspect_on_mouse_over;
+	toolbar_debug->ToggleTool(mxID_DEBUG_INSPECT_ON_MOUSE_OVER,config->Debug.inspect_on_mouse_over);
+}
+
+void mxMainWindow::OnDebugReturnFocusOnContinue (wxCommandEvent &event) {
+	wxToolBar *toolbar_debug = _get_toolbar(tbDEBUG);
+	config->Debug.return_focus_on_continue = !config->Debug.return_focus_on_continue;
+	toolbar_debug->ToggleTool(mxID_DEBUG_RETURN_FOCUS_ON_CONTINUE,config->Debug.return_focus_on_continue);
+}
+
+void mxMainWindow::OnDebugEnableInverseExecution (wxCommandEvent &event) {
+	bool inv = debug->EnableInverseExec();
+	_menu_item(mxID_DEBUG_INVERSE_EXEC)->Check(false);
+	_menu_item(mxID_DEBUG_INVERSE_EXEC)->Enable(inv);
+	_menu_item(mxID_DEBUG_ENABLE_INVERSE_EXEC)->Check(inv);
+	wxToolBar *toolbar_debug = _get_toolbar(tbDEBUG);
+	toolbar_debug->ToggleTool(mxID_DEBUG_ENABLE_INVERSE_EXEC,inv);
+	toolbar_debug->ToggleTool(mxID_DEBUG_INVERSE_EXEC,false);
+	toolbar_debug->EnableTool(mxID_DEBUG_INVERSE_EXEC,inv);
+}
+
+void mxMainWindow::OnDebugInverseExecution (wxCommandEvent &event) {
+	bool inv=debug->ToggleInverseExec();
+	_menu_item(mxID_DEBUG_INVERSE_EXEC)->Check(inv);
+	_get_toolbar(tbDEBUG)->ToggleTool(mxID_DEBUG_INVERSE_EXEC,inv);
+}
+
+void mxMainWindow::AddToDebugLog(wxString str) {
+	debug_log_panel->Append(str);
+//	debug_log_panel->SetSelection(debug_log_panel->GetCount());
+	debug_log_panel->ScrollLines(1);
+}
+
+void mxMainWindow::ClearDebugLog() {
+	debug_log_panel->Clear();
+}
+
+/**
+* @brief Muestra el panel de valgrind y carga algun resultado
+* @param what   tipo de resultado, v=valgrind, c=cppcheck
+* @param file   archivo de donde leer los resultados
+**/
+void mxMainWindow::ShowValgrindPanel(int what, wxString file, bool force) {
+	m_aui->Hide(PaneId::Compiler);
+	if (valgrind_panel) {
+		m_aui->GetPane(valgrind_panel).Show();
+		valgrind_panel->SetMode((mxVOmode)what,file);
+	} else {
+		m_aui->AddPane(
+			valgrind_panel = new mxValgrindOuput(this,(mxVOmode)what,file)
+			, wxAuiPaneInfo().Name("valgrind_output").Bottom().Caption(LANG(CAPTION_TOOLS_RESULTS_PANEL,"Panel de resultados")).CloseButton(true).MaximizeButton(true).Row(8));
+	}
+	if (valgrind_panel->LoadOutput() || force) {
+		m_aui->GetPane(valgrind_panel).Show();
+	} else {
+		m_aui->GetPane(valgrind_panel).Hide();
+	}
+	m_aui->Update();
+}
+
+void mxMainWindow::OnViewBeginnerPanel (wxCommandEvent &event) {
+	m_aui->ToggleFromMenu(PaneId::Beginners,GetBeginnersPanel());
+}
+void mxMainWindow::OnViewMinimapPanel (wxCommandEvent &event) {
+	m_aui->ToggleFromMenu(PaneId::Minimap,GetMinimapPanel());
+}
+
+void mxMainWindow::ShowDiffSideBar(bool bar, bool map) {
+	mxAUIFreezeGuard guard(*m_aui);
+	if (map) {
+		if (!mxDiffSideBar::HaveInstance()) {
+			m_aui->AttachGenericPane(&(mxDiffSideBar::GetInstance()),"diff",true)->Right().Dock().Row(2).Show().MaxSize(20,-1);
+		}
+	}
+	if (bar) {
+		m_aui->GetPane(_get_toolbar(tbDIFF)).Show();
+		m_aui->Update();
+	}
+}
+
+void mxMainWindow::ShowGCovSideBar() {
+	if (mxGCovSideBar::HaveInstance()) return;
+	m_aui->AttachGenericPane(&(mxGCovSideBar::GetInstance()), "gcov", true)->Left().Dock().Row(10);
+}
+
+mxSource *mxMainWindow::GetCurrentSource() {
+	IF_THERE_IS_SOURCE
+		return CURRENT_SOURCE;
+	else 
+		return nullptr;
+}
+
+void mxMainWindow::OnEscapePressed(wxCommandEvent &event) {
+	bool do_update=false;
+	m_aui->Hide(PaneId::Compiler);
+	m_aui->Hide(PaneId::QuickHelp);
+//#ifndef __WIN32__
+	if (m_aui->GetPane(valgrind_panel).IsShown()) {
+		_menu_item(mxID_VIEW_COMPILER_TREE)->Check(false);
+		m_aui->GetPane(valgrind_panel).Hide();
+		do_update=true;
+	}
+//#endif
+	if (do_update) m_aui->Update();	
+}
+
+void mxMainWindow::HideExplorerTreePanel() {
+	_menu_item(mxID_VIEW_EXPLORER_TREE)->Check(false);
+	m_aui->GetPane(explorer_tree.treeCtrl).Hide();
+	m_aui->Update();
+}
+void mxMainWindow::ShowExplorerTreePanel(bool set_focus) {
+	// esto estaba en OnViewExplorerTree... ver si debe quedar o no
+	if (!project) SetExplorerPath(config->Files.last_dir);
+	m_aui->Show(PaneId::Explorer,true);
+	if (set_focus) explorer_tree.treeCtrl->SetFocus();
+	else SetFocusToSourceAfterEvents();
+}
+
+mxBeginnerPanel *mxMainWindow::GetBeginnersPanel() {
+	if (!g_beginner_panel) {
+		g_beginner_panel = new mxBeginnerPanel(this);
+		m_aui->Create(PaneId::Beginners,g_beginner_panel);
+	}
+	return g_beginner_panel;
+}
+
+mxMiniMapPanel *mxMainWindow::GetMinimapPanel() {
+	if (!m_minimap) {
+		m_minimap = new mxMiniMapPanel(this);
+		m_aui->Create(PaneId::Minimap,m_minimap);
+		IF_THERE_IS_SOURCE m_minimap->SetCurrentSource(CURRENT_SOURCE);
+	}
+	return m_minimap;
+}
+
+void mxMainWindow::OnResize(wxSizeEvent &evt) {
+	m_aui->OnResize();
+}
+
+void mxMainWindow::SetStatusBarFields() {
+	if (config->Source.lineNumber) {
+		status_bar->SetFieldsCount(1); 
+	} else {
+		int sz[2]={-5,-1}; 
+		status_bar->SetFieldsCount(2,sz);
+	}
+}
+
+void mxMainWindow::OnViewDuplicateTab(wxCommandEvent &evt) {
+	IF_THERE_IS_SOURCE {
+		mxSource *orig = CURRENT_SOURCE;
+		if (orig->sin_titulo) {
+			mxMessageDialog(main_window,LANG(MAINW_CANNOT_SPLIT_VIEW,"No se puede duplicar archivos sin nombre"))
+				.Title(LANG(GENERAL_ERROR,"Error")).IconError().Run();
+			return;
+		}
+		int opage=notebook_sources->GetSelection();
+		mxSource *source = new mxSource(notebook_sources, orig->source_filename.GetFullName());
+		source->SplitFrom(orig);
+		notebook_sources->AddPage(source, source->page_text, true, notebook_sources->GetPageBitmap(opage));
+		
+		main_window->notebook_sources->Split(notebook_sources->GetPageCount()-1,wxBOTTOM);
+		main_window->notebook_sources->SetSelection(opage);
+		main_window->notebook_sources->SetSelection(notebook_sources->GetPageCount()-1);
+	}
+}
+
+void mxMainWindow::OnProjectTreeToggleFullPath(wxCommandEvent &event) {
+	project_tree.ToggleFullPath();
+}
+
+void mxMainWindow::project_tree_struct::ToggleFullPath() {
+	config->Init.fullpath_on_project_tree = !config->Init.fullpath_on_project_tree;
+	for( GlobalListIterator<project_file_item*> it(&project->files.all); it.IsValid(); it.Next() ) {
+		treeCtrl->SetItemText(it->GetTreeItem(),MakeLabel(it->GetRelativePath()));
+	}
+	treeCtrl->SortChildren(sources);
+	treeCtrl->SortChildren(others);
+	treeCtrl->SortChildren(headers);
+}
+
+void mxMainWindow::OnInternalInfo ( wxCommandEvent &event ) {
+	wxString info;
+	compile_and_run_struct_single *item=compiler->compile_and_run_single;
+	while (item) {
+		info<<item->GetInfo()<<"\n";
+		item=item->next;
+	}
+	wxMessageBox(info);
+}
+
+void mxMainWindow::SetStatusText(wxString text) {
+	status_bar->SetStatusText(text);
+}
+
+/// @brief sets status bar progress (0-100 to show, -1 to hide)
+void mxMainWindow::SetStatusProgress(int prog) {
+	if (prog>100) prog=100;
+	status_bar->SetProgress(prog);
+}
+
+
+void mxMainWindow::FocusToSource() {
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->SetFocus();
+}
+
+void mxMainWindow::PrepareGuiForProject (bool project_mode) {
+
+	mxAUIFreezeGuard aui_guard(*m_aui);
+	
+	menu_data->UpdateToolbar(MenusAndToolsConfig::tbPROJECT,true);
+	if (_toolbar_visible(tbPROJECT)) {
+		if (project_mode) {
+			m_aui->GetPane(_get_toolbar(tbPROJECT)).Show();
+			SortToolbars(false);
+		} else
+			m_aui->GetPane(_get_toolbar(tbPROJECT)).Hide();
+		m_aui->Update();
+	}
+	
+	// acomodar los menues 
+	menu_data->SetProjectMode(project_mode); // habilitar/deshabilitar items exclusivos de proyecto
+	// cambiar el nombre del Archivo->Abrir
+	wxMenuItem *fo_item= _menu_item(mxID_FILE_OPEN); wxString fo_shortcut = fo_item->GetItemLabel(); 
+	if (fo_shortcut.Contains("\t")) fo_shortcut=wxString("\t")+fo_shortcut.AfterLast('\t'); else fo_shortcut="";
+	fo_item->SetItemLabel(wxString(project_mode?LANG(MENUITEM_FILE_OPEN_ON_PROJECT,"&Abrir/Agregar al proyecto..."):LANG(MENUITEM_FILE_OPEN,"&Abrir..."))+fo_shortcut);
+	// resetear opciones de wxfb
+	_menu_item(mxID_TOOLS_WXFB_REGEN)->Enable(false);
+	_menu_item(mxID_TOOLS_WXFB_INHERIT_CLASS)->Enable(false);
+	_menu_item(mxID_TOOLS_WXFB_UPDATE_INHERIT)->Enable(false);
+	
+	if (project_mode) {
+		SetTitle(wxString("ZinjaI - ")+project->project_name);
+		// mostrar el arbol de proyecto
+		m_aui->Show( config->Init.prefer_explorer_tree ? PaneId::Explorer : PaneId::Project , true );
+	} else {
+		SetTitle("ZinjaI");
+		SetToolchainMode(false);
+		m_aui->Hide(PaneId::Compiler);
+		m_aui->Hide(PaneId::Explorer);
+		m_aui->Hide(PaneId::Symbols);
+		m_aui->Hide(PaneId::Project);
+		if (valgrind_panel) m_aui->GetPane(valgrind_panel).Hide();
+	}
+	gui_project_mode=project_mode;
+}
+
+void mxMainWindow::SetToolchainMode (bool is_extern) {
+	if (is_extern) {
+		compiler_tree.treeCtrl->Hide();
+		extern_compiler_output->Show();
+	} else {
+		compiler_tree.treeCtrl->Show();
+		extern_compiler_output->Hide();
+	}
+	compiler_panel->GetSizer()->Layout();
+}
+
+void mxMainWindow::SetCompilingStatus (const wxString &message, bool also_statusbar) {
+	if (current_toolchain.IsExtern()) extern_compiler_output->AddLine(mxExternCompilerOutput::Status,message);
+	else {
+		compiler_tree.treeCtrl->SetItemText(compiler_tree.state,message);
+		if (also_statusbar) main_window->compiler_tree.treeCtrl->SelectItem(main_window->compiler_tree.state);
+	}
+	if (also_statusbar) main_window->SetStatusText(message);
+}
+
+/// @brief helper function for mxMainWindow::OnSelectErrorCommon
+static void SuggestFix(mxSource *source, int pos, const wxString &error, const wxString &first_child) {
+	wxString message;
+	if (error.Contains(EN_COMPOUT_DID_YOU_MEAN)) {
+		message = error.Mid(error.Index(EN_COMPOUT_DID_YOU_MEAN));
+	} else if (first_child.Contains(EN_COMPOUT_SUGGESTED_ALTERNATIVE)) {
+		message = first_child.Mid(first_child.Index(EN_COMPOUT_SUGGESTED_ALTERNATIVE));
+	}
+	if (message.IsEmpty()) return;
+	wxString fix = message.AfterFirst('\'').BeforeFirst('\'');
+	if (!fix.IsEmpty()) {
+		
+		class ShowAutocompAfterEventsAction: public mxMainWindow::AfterEventsAction {
+			mxSource *m_src; int m_pos;
+			wxString m_fix, m_msg;
+		public: 
+			ShowAutocompAfterEventsAction(mxSource *src, int pos, const wxString &fix, const wxString &msg) 
+				: m_src(src), m_pos(pos), m_fix(fix), m_msg(msg) { }
+			void Run() override { 
+				g_autocomp_list.Init();
+				g_autocomp_list.Add(m_fix,"",m_msg);
+				int pend = m_src->WordEndPosition(m_pos,true);
+				m_src->ShowAutoComp(pend-m_pos,g_autocomp_list.GetResult(),false);
+			}
+		};
+		main_window->CallAfterEvents(new ShowAutocompAfterEventsAction(source,pos,fix,message));
+	}
+}
+
+void mxMainWindow::OnSelectErrorCommon (const wxString & error, const wxString &first_child, bool set_focus_timer) {
+	long line;
+	wxString preline=error[1]==':'?error.AfterFirst(':').AfterFirst(':'):error.AfterFirst(':');
+	if ( preline.BeforeFirst(':').ToLong(&line) ) {
+		// ver si esta abierto
+		wxString sthe_one(error[1]!=':' ?error.BeforeFirst(':'):(error.Mid(0,2)+error.AfterFirst(':').BeforeFirst(':')));
+		if (error.Last()==':') {
+			// Mensajes previos al error como "In file included from foo.cpp:42:" o "foo.cpp: in function foo()"
+			if      (sthe_one.StartsWith(EN_COMPOUT_IN_FILE_INCLUDED_FROM)) sthe_one = sthe_one.Mid(wxString(EN_COMPOUT_IN_FILE_INCLUDED_FROM).Len());
+			else if (sthe_one.StartsWith(ES_COMPOUT_IN_FILE_INCLUDED_FROM)) sthe_one = sthe_one.Mid(wxString(ES_COMPOUT_IN_FILE_INCLUDED_FROM).Len());
+		}
+		wxFileName the_one;
+		if (project)             the_one=sthe_one=DIR_PLUS_FILE(project->path,sthe_one);
+		else IF_THERE_IS_SOURCE  the_one=sthe_one=DIR_PLUS_FILE(CURRENT_SOURCE->source_filename.GetPath(),sthe_one);
+		else                     the_one=sthe_one;
+		mxSource *source = nullptr;
+		for (int i=0,j=notebook_sources->GetPageCount();i<j;i++) {
+			mxSource *aux = ((mxSource*)(notebook_sources->GetPage(i)));
+			if ((!aux->sin_titulo && SameFile(aux->source_filename,the_one)) || (aux->temp_filename==the_one && aux==compiler->last_compiled) ) {
+				notebook_sources->SetSelection(i);
+				source = aux; break;
+			}
+		}
+		// si no esta abierto
+		if (!source) {
+			source = OpenFile(sthe_one);
+			if (source==EXTERNAL_SOURCE) return; // si era un proyecto wxfb o algo asi que se abre afuera de zinjai
+			if (!source) { new mxGotoFileDialog(the_one.GetFullName(),this,line-1); return; }
+		}
+		
+		line = source->FixErrorLine(line);
+		source->MarkError(line-1);
+		
+		preline=preline.AfterFirst(':').BeforeFirst(':');
+		if (preline.Len()) {
+			unsigned int i=0, n=0;
+			while (i<preline.size() && preline[i]>='0' && preline[i]<='9') 
+			{ n=n*10+preline[i++]-'0'; }
+			if (i==preline.Len()) {
+				n+=source->PositionFromLine(line-1)-1;
+				source->SelectError(0,n,n);
+				// el siguiente if no deberia ser necesario, pero el autocomp de 
+				// SuggestFix deja el foco en el fuente y no en la lista, al menos
+				// con paneles autoocultables en linux
+				if (!m_aui->IsVisible(PaneId::Compiler)) 
+					m_aui->Show(PaneId::Compiler,true);
+				SuggestFix(source,n,error,first_child);
+#ifndef __WIN32__
+				if (set_focus_timer)
+#endif
+					SetFocusToSourceAfterEvents();
+				return;
+			}
+		}
+		
+		wxString keyword=error;
+		
+		int a1 = keyword.Find('\'',true), a2 = keyword.Find('`',true);
+		int p1=wxNOT_FOUND, p2=wxNOT_FOUND;
+		if (a1==wxNOT_FOUND && a2!=wxNOT_FOUND)
+			p1=a2;
+		else if (a2==wxNOT_FOUND && a1!=wxNOT_FOUND)
+			p1=a1;
+		else if (a2!=wxNOT_FOUND && a1!=wxNOT_FOUND)
+			p1=a1>a2?a1:a2;
+		
+		if (p1!=wxNOT_FOUND)
+			keyword=keyword.Left(p1);
+		
+		a1 = keyword.Find('\'',true), a2 = keyword.Find('`',true);
+		if (a1==wxNOT_FOUND && a2!=wxNOT_FOUND)
+			p2=a2;
+		else if (a2==wxNOT_FOUND && a1!=wxNOT_FOUND)
+			p2=a1;
+		else if (a2!=wxNOT_FOUND && a1!=wxNOT_FOUND)
+			p2=a1>a2?a1:a2;
+		
+		if (p2!=wxNOT_FOUND)
+			keyword=keyword.Mid(p2+1);
+		
+		bool found=false;
+		int endpos = source->PositionFromLine(line);
+		int startpos = source->PositionFromLine(line-1);
+		int pos;
+		if (keyword!="" && keyword!=error) {
+			pos=source->FindText(startpos,endpos,keyword,wxSTC_FIND_MATCHCASE|wxSTC_FIND_WHOLEWORD);
+			if (pos>=0) {
+				found=true;
+			} else {
+				if (!found && keyword[keyword.Len()-1]==')' && keyword.BeforeLast('(')!="") {
+					keyword=keyword.BeforeLast('(');
+					if (keyword.AfterLast(':')!="")
+						keyword=keyword.AfterLast(':');
+					pos=source->FindText(startpos,endpos,keyword,wxSTC_FIND_MATCHCASE|wxSTC_FIND_WHOLEWORD);
+					if (pos>=0) {
+						found=true;
+					} else {
+						if (!found && keyword.AfterLast(':')!="") {
+							keyword=keyword.AfterLast(':');
+							int pos=source->FindText(startpos,endpos,keyword,wxSTC_FIND_MATCHCASE|wxSTC_FIND_WHOLEWORD);
+							if (pos>=0) {
+								found=true;
+							}
+						}
+					}
+				}
+			}
+		}
+		if (found) {
+			int p=source->FindText(pos+keyword.Len(),endpos,keyword,wxSTC_FIND_MATCHCASE|wxSTC_FIND_WHOLEWORD);
+			if (p!=wxSTC_INVALID_POSITION) {
+				source->SelectError(1,pos,pos+keyword.Len());
+				source->SelectError(1,p,p+keyword.Len());
+				p=p+keyword.Len();
+				while ( (p=source->FindText(p,endpos,keyword,wxSTC_FIND_MATCHCASE|wxSTC_FIND_WHOLEWORD))>=0 ) {
+					source->SelectError(1,p,p+keyword.Len());
+					p=p+keyword.Len();
+				}
+				source->GotoPos(source->GetLineIndentPosition(line-1));
+				SuggestFix(source,pos,error,first_child);
+			} else {
+				source->SelectError(0,pos,pos+keyword.Len());
+			}
+		}
+#ifdef __WIN32__
+		SetFocusToSourceAfterEvents();
+#endif
+		m_aui->Show(PaneId::Compiler,true);
+		return;
+	}
+}
+
+void mxMainWindow::OnToolbarMenu (wxCommandEvent & evt) {
+	project->SetActiveConfiguration(project->configurations[evt.GetId()-mxID_LAST_ID]);
+}
+
+void mxMainWindow::CallAfterEvents (AfterEventsAction * action) {
+	if (!after_events_timer) return; // main_window not initialized yet
+	action->m_next=call_after_events;
+	call_after_events=action;
+	if (!current_after_events_action) 
+		after_events_timer->Start(50,true);
+}
+
+void mxMainWindow::OnAfterEventsTimer (wxTimerEvent & event) {
+	wxMouseState ms=wxGetMouseState();
+	if (ms.LeftDown()||ms.MiddleDown()||ms.RightDown()) {
+		after_events_timer->Start(50,true); return;
+	}
+	AfterEventsAction * &current = current_after_events_action;
+	current = call_after_events; 
+	call_after_events = nullptr;
+	while (current) {
+		ZLDBG("MainWindow","AfterEventsAction, Run");
+		AfterEventsAction *next = current->m_next;
+		if (current->m_do_run) current->Run(); 
+		delete current;
+		current = next;
+	}
+	if (call_after_events) {
+		ZLDBG("MainWindow","AfterEventsAction, new actions detected");
+		after_events_timer->Start(50,true);
+	}
+}
+
+void mxMainWindow::SetFocusToSourceAfterEvents () {
+	class SetFocusToSourceAfterEventsAction : public mxMainWindow::AfterEventsAction {
+		public: void Run() override { 
+			if (config->Init.autohide_panels) main_window->Raise(); 
+			main_window->SetFocusToSource(); // only set "local" focus, first raise must set the focus to the main window
+		}
+	};
+	CallAfterEvents(new SetFocusToSourceAfterEventsAction());
+}
+
+void mxMainWindow::OnParserContinueProcess(wxTimerEvent &event) {
+	parser->OnParserProcessTimer();
+}
+
+void mxMainWindow::OnMacroRecord (wxCommandEvent & evt) {
+	if (!m_macro||(*m_macro)[0].msg==0) {
+		SetStatusText(LANG(MAINW_MACRO_START,"Generando macro, presione Ctrl+Shift+Q para finalizar."));
+		if (!m_macro) m_macro=new SingleList<mxSource::MacroAction>();
+		else m_macro->Clear();
+		m_macro->Add(mxSource::MacroAction(1));
+		IF_THERE_IS_SOURCE CURRENT_SOURCE->StartRecord();
+	} else {
+		SetStatusText(LANG(MAINW_MACRO_STOP,"Macro guardada, presione Ctrl+Q para reproducirla."));
+		(*m_macro)[0].msg=0;
+		IF_THERE_IS_SOURCE CURRENT_SOURCE->StopRecord();
+	}
+}
+
+void mxMainWindow::OnMacroReplay (wxCommandEvent & evt) {
+	if (!m_macro) {
+		SetStatusText(LANG(MAINW_MACRO_STOP,"No hay macro definida, presione Ctrl+Shift+Q para generarla."));
+		return;
+	}
+	if ((*m_macro)[0].msg==1) OnMacroRecord(evt);
+	IF_THERE_IS_SOURCE {
+		mxSource *src=CURRENT_SOURCE;
+		mxSource::UndoActionGuard undo_action(src);
+		for(int i=1;i<m_macro->GetSize();i++) {
+			mxSource::MacroAction &m=(*m_macro)[i].Get();
+			if (m.for_sci) src->SendMsg(m.msg,m.wp,m.lp);
+			else { evt.SetId(m.msg); ProcessEvent(evt); }
+		}
+		evt.SetId(mxID_MACRO_REPLAY); // just to be sure
+	}
+}
+
+void mxMainWindow::OnNavigationHistoryNext (wxCommandEvent &evt) {
+	g_navigation_history.Next();
+}
+
+void mxMainWindow::OnNavigationHistoryPrev (wxCommandEvent &evt) {
+	g_navigation_history.Prev();
+}
+
+void mxMainWindow::OnSourceGotoDefinition (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->JumpToCurrentSymbolDefinition();
+}
+
+void mxMainWindow::UpdateStylesInSources ( ) {
+	for (unsigned int i=0;i<notebook_sources->GetPageCount();i++)
+		((mxSource*)(notebook_sources->GetPage(i)))->SetColours();
+}
+
+void mxMainWindow::OnDebugSendSignal (wxCommandEvent & event) {
+	static wxString prev;
+	wxArrayString signames; signames.Add("<none>: continuar sin enviar ninguna señal)");
+	vector<SignalHandlingInfo> vsig;
+	debug->GetSignals(vsig); if(vsig.empty()) return;
+	for(unsigned int i=0;i<vsig.size();i++) signames.Add(vsig[i].name+": "+vsig[i].description);
+	wxSingleChoiceDialog dlg(this,"Signal:","Send signal to running process",signames);
+	int pprev=signames.Index(prev);
+	if (pprev!=wxNOT_FOUND) dlg.SetSelection(pprev);
+	dlg.ShowModal();
+	wxString ans=dlg.GetStringSelection();
+	if (ans.Len()) {
+		prev=ans;
+		ans=ans.BeforeFirst(':');
+		if (ans=="<none>") ans="0";
+		debug->SendSignal(ans);
+	}
+}
+
+void mxMainWindow::OnDebugSetSignals (wxCommandEvent & event) {
+	mxSignalsSettings();
+}
+
+void mxMainWindow::OnDebugGdbCommand (wxCommandEvent & event) {
+	mxGdbCommandsPanel *gdb_cmd = new mxGdbCommandsPanel();
+	m_aui->AttachGenericPane(gdb_cmd,"gdb")->BestSize(wxSize(300,100));
+	gdb_cmd->SetFocus();
+}
+
+/**
+* @brief Enables/disables menu items according to current state (project,debug,current_source,etc)
+*
+* This is not the best idea... this will disable some items when a menu is shown, and if the state 
+* changes but the user don't open the menu again, thoose items will stay disabled, and then their
+* respective shortcuts won't work, but they should do so.
+**/
+void mxMainWindow::OnMenuOpen(wxMenuEvent & evt) {
+//	menu_data->SetMenuItemsStates(evt.GetMenu());
+}
+
+void mxMainWindow::OnHelpShortcuts (wxCommandEvent & event) {
+	mxHelpWindow::ShowHelp("atajos.html");
+}
+
+void mxMainWindow::OnChangeShortcuts (wxCommandEvent & event) {
+	mxShortcutsDialog(this);
+}
+
+void mxMainWindow::OnHighlightKeyword (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE CURRENT_SOURCE->OnHighLightWord(event);
+}
+
+void mxMainWindow::UnregisterSource (mxSource * src) {
+	if (src==master_source) master_source=nullptr;
+	if (m_minimap) { m_minimap->UnregisterSource(src); }
+	AfterEventsAction *current = call_after_events;
+	for(int i=0;i<2;i++) {
+		while (current) {
+			if (current->m_source==src) current->m_do_run=false;
+			current = current->m_next;
+		}
+		if (current_after_events_action) 
+			current = current_after_events_action->m_next;
+		else break;
+	}
+}
+
+void mxMainWindow::OnFileSetAsMaster (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		if (master_source==CURRENT_SOURCE)
+			master_source = nullptr;
+		else
+			master_source = CURRENT_SOURCE;
+	};
+}
+
+/**
+* @param action En cualquier caso se hace cargo de esta accion, o la ejecuta
+*               o se la pasa al proceso de compilacion
+**/
+void mxMainWindow::CompileSource (bool force_compile, GenericAction *action) {
+	RaiiDeletePtr<GenericAction> oe_del(action);
+	mxSource *source = CURRENT_SOURCE;
+	if (master_source) {
+		if (!source->sin_titulo && source->GetModify()) source->SaveSource(); // guardar el actual
+		source = master_source;
+	}
+	if (source->sin_titulo) { // si no esta guardado, siempre compilar
+		if (source->GetLine(0).StartsWith("make me a sandwich")) { wxMessageBox("No way!"); return; }
+		else if (source->GetLine(0).StartsWith("sudo make me a sandwich")) source->SetText(wxString("/** Ok, you win! **/")+wxString(250,' ')+"#include <iostream>\n"+wxString(250,' ')+"int main(int argc, char *argv[]) {std::cout<<\"Here you are:\\n\\n   /-----------\\\\\\n  ~~~~~~~~~~~~~~~\\n   \\\\-----------/\\n\";return 0;}\n\n");
+		source->SaveTemp();
+		compiler->CompileSource(source,fms_move(action));
+	} else { // si estaba guardado ver si cambio
+		// si es un .h, avisar que probablemente sea un error intentar ejecutarlo
+		wxFileName source_filename = source->GetFullPath();
+		wxString ext=source->sin_titulo?wxString(""):source_filename.GetExt().MakeLower();
+		static bool ask=true;
+		if (ask && !master_source && config->ExtIsHeader(ext)) {
+			mxMessageDialog::mdAns ans = 
+				mxMessageDialog(this,LANG(MAINW_RUN_HEADER_WARNING,""
+										  "Esta intentando compilar/ejecutar un archivo de cabecera.\n"
+										  "Probablemente deba intentar ejecutar un archivo fuente que\n"
+										  "incluya esta cabecera. ¿Desea continuar?\n\n"
+										  "Nota: puede configurar un fuente para que se ejecute siempre\n"
+										  "dicho fuente sin importar cual otro tenga el foco con click\n"
+										  "derecho sobre la pesataña del mismo."))
+					.Check1(LANG(MAINW_RUN_HEADER_CHECK,"No volver a mostrar este mensaje"),false)
+					.Title(LANG(GENERAL_WARNING,"Aviso")).ButtonsYesNo().IconWarning().Run();
+			if (ans.no) return;
+			if (ans.check1) ask=false;
+		}
+		// si cambio el fuente, guardarlo 
+		bool modified = source->GetModify();
+		if (modified) source->SaveSource();
+		// ver si hay que recompilar
+		bool should_compile 
+			= force_compile // si no habia que recompilar se marca igual como que si solo para evitar los tests que siguen
+			|| !source->GetBinaryFileName().FileExists() // si no hay binario, hay que recompilar
+			|| source->GetBinaryFileName().GetModificationTime()<source_filename.GetModificationTime() // si el binario es mas viejo que fuente
+			|| (config->Running.check_includes && mxUT::AreIncludesUpdated(source->GetBinaryFileName().GetModificationTime(),source_filename)); // si el binario es mas viejo que algun include
+		// compilar, o depurar, o ejecutar, segun corresponda
+		if (should_compile) compiler->CompileSource(source,fms_move(action));
+		else if (action) action->Run();
+	}
+}
+
+void mxMainWindow::OnHelpProject(wxCommandEvent & evt) {
+	if (!project) return;
+	if (project->help_page.IsEmpty()) { OnFileProjectConfig(evt); return; }
+	wxString file = project->help_page;
+	if (file.Lower().Contains("://")) {
+		mxUT::OpenInBrowser(file);
+	} else {
+		if (! (file.StartsWith("$")||file.StartsWith("\\")||file.StartsWith("/")||(file.Len()>2&&file[1]==':')) )
+			file = DIR_PLUS_FILE(project->GetPath(),file);
+		mxHelpWindow::ShowHelp(file);
+	}
+}
+
+void mxMainWindow::OnToolbarSettings (wxCommandEvent & evt) {
+	mxPreferenceWindow::ShowUp()->SetToolbarPage(debug->IsDebugging()?"debug":"");
+}
+
+void mxMainWindow::FindAll (const wxString & what) {
+	if (!find_replace_dialog) find_replace_dialog = new mxFindDialog(this,wxID_ANY);
+	find_replace_dialog->FindAll(what);
+	return;
+}
+
+
+void mxMainWindow::OnDebugShowRegisters (wxCommandEvent & event) {
+	if (!registers_panel) {
+		registers_panel = new mxRegistersGrid(this);
+		m_aui->AddPane(registers_panel, wxAuiPaneInfo().Right().Layer(0).CloseButton(true).MaximizeButton(true).Resizable(true).Caption("Registers").BestSize(300,300).Show());
+	} else {
+		m_aui->GetPane(registers_panel).Show();
+	}
+	m_aui->Update();
+}
+
+void mxMainWindow::OnDebugShowAsm (wxCommandEvent & event) {
+	m_aui->AttachGenericPane(new mxGdbAsmPanel(this),"ASM (gdb)")->BestSize(wxSize(400,300));
+}
+
+void mxMainWindow::OnToolsCodeGenerateFunctionDef (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::GenerateFunctionDec(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+void mxMainWindow::OnToolsCodeGenerateFunctionDec (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::GenerateFunctionDef(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+
+void mxMainWindow::OnToolsCodeSurroundIf (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::SurroundIf(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+
+void mxMainWindow::OnToolsCodeSurroundWhile (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::SurroundWhile(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+
+void mxMainWindow::OnToolsCodeSurroundDo (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::SurroundDo(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+
+void mxMainWindow::OnToolsCodeSurroundFor (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::SurroundFor(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+
+void mxMainWindow::OnToolsCodeSurroundIfdef (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::SurroundIfdef(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+
+void mxMainWindow::OnToolsCodeExtractFunction (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		LocalRefactory::ExtractFunction(CURRENT_SOURCE,CURRENT_SOURCE->GetCurrentPos()); return;
+	}
+}
+
+void mxMainWindow::OnToolsCodePoupup (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		CURRENT_SOURCE->PopupMenuCodeTools();
+	};
+}
+
+void mxMainWindow::OnDebugAutoStep (wxCommandEvent & event) {
+	bool autostep = debug->ToggleAutoStep();
+	_menu_item(mxID_DEBUG_AUTO_STEP)->Check(autostep);
+	_get_toolbar(tbDEBUG)->ToggleTool(mxID_DEBUG_AUTO_STEP,autostep);
+}
+
+void mxMainWindow::OnHelpFindCommand (wxCommandEvent & event) {
+	IF_THERE_IS_SOURCE {
+		mxSource *src = CURRENT_SOURCE;
+		if (project) {
+			project_file_item *fi = project->files.FindFromItem(src->GetTreeItem());
+			if (fi) project_tree.Select(src->GetTreeItem());
+			else project_tree.ClearSelection();
+		}
+	}
+	mxCommandFinder().ShowModal();
+}
+
+void mxMainWindow::OnToolsCombineTemplate (wxCommandEvent &event) {
+	mxTemplateCombination::Run(this);
+}
+
+void mxMainWindow::OnEditUndoHistory (wxCommandEvent &event) {
+	IF_THERE_ISNT_SOURCE return;
+	mxSource *src = CURRENT_SOURCE;
+	if (src->m_undo_history_panel) return; // ya tiene un panel de historial
+	mxSourceUndoHistory *undo_history = new mxSourceUndoHistory(this,CURRENT_SOURCE);
+	m_aui->AttachGenericPane(undo_history,LANG(MAINW_UNDO_HISTORY,"Historial de cambios"),true)->Bottom().Dock();;
+}

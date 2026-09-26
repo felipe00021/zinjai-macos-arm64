@@ -1,0 +1,51 @@
+Short version: Run "mingw32-make win32" on Windows, or "make linux" on GNU/Linux or Mac OSX. 
+               If that fails, read the following detailed description.
+
+
+Building Zinjai
+-----------------
+
+ For building ZinjaI you will need g++ and wxWidgets 2.8 compiled in ANSI mode. Note that
+ most common GNU/Linux distribution offer the UNICODE version in their repositories, so you may  
+ have to compile it manually from source code. Just follow regular steps (./configure; make; sudo 
+ make install) adding --enable-ansi --disable-unicode arguments when running configure. If you're 
+ compiling wxWidgets 2.8 you should also run make and sudo make install in contrib/src/stc, if you're 
+ compiling 2.9 version you should add --enable-stc, for building its Scintilla extension. 
+ ZinjaI's Windows installer includes a suitable wxWidgets version, so you won't need anything else*.
+
+ You can use Makefiles in directories src, src_extra and parser to build ZinjaI's executable files, 
+ or a global Makefile in zinjai directory that compiles everything. The latter is easier one.
+ Run "make linux-clean" and "make linux" for deleting the downloaded binaries and compiling new ones 
+ in GNU/Linux. On Windows systems replace make with mingw32-make and linux with win32.
+ 
+ If you want to compile only one module, src contains the GUI and most important part, parser contains
+ the parser that the GUI uses to build sysmbols tree and src_extra contains some other tools and 
+ wrappers, some of them essential for the  GUI to run your programs. The available makefiles in each 
+ of this directories are:
+    Makefile.lnx: for building GNU/Linux version with gcc
+    Makefile.w32: for building Windows version with MinGW
+    Makefile.mac: for building MacOS version
+    Makefile.wine: for building Windows version from GNU/Linux with MinGW and wine
+    Makefile.m32/makefile.ppc: for building MacOS from GNU/Linux with a cross-compiler
+    Makefile.common: not to be used directly, included by others
+ You should use one the first three options. The remaining ones are used by me for packing all 
+ version from a single GNU/Linux system, and can have some specific paths that wont feed your 
+ needs, so you should not use them.
+
+ Windows' makefiles assume that you have a complete MinGW installation in zinjai/MinGW (as zinjai's
+ installer does, with wx included). It will asume that MinGW/bin is in current path. You can get an
+ already configured command line launching the terminal from "Tools" menu in ZinjaI (remember to close
+ ZinjaI after launching the terminal to release zinjai.exe file). The full path is used to find 
+ wxWidgets and other libraries. You can change that location modifying the first line in the Makefiles 
+ (variable MINGW_DIR). In order to compile draw.exe (the last binary, used for displaying graphs), 
+ you also need zlib and libpng. You can get them from gnuwin32.sourceforge.net (download "Developer 
+ files" and extract them in a new folder named "misc" in MinGW). You can still run ZinjaI without it, 
+ but you'll have to setup another viewer in Preferences' dialog.
+ 
+ *note: the scintilla wrapper included in wx 2.8's contrib section has a bug in 64bits mode when using
+ macros (Ctrl+Shift+Q in ZinjaI). Binaries for 64bits included a patched version. The patch consist on
+ changing wparam field from int to unsigned long in wxStyledTextEvent struct, and lparam from int to
+ long in the same struct.
+
+ Pablo Novara, zaskar_84@yahoo.com.ar
+

@@ -1,0 +1,19 @@
+WX_CONFIG=wx-config
+GPP=g++
+CXXFLAGS=-O2 -std=c++14 `${WX_CONFIG} --cxxflags`
+LDFLAGS=`${WX_CONFIG} --libs`
+OBJS_DIR=../../temp/img_viewer/release.mac
+
+all: ../../bin/img_viewer.bin
+
+include Makefile.common
+
+clean:
+	rm -rf ${OBJS} ../../bin/img_viewer.bin
+	rm -f core
+
+../../bin/img_viewer.bin: ${OBJS_DIR} ${OBJS}
+	${GPP} ${OBJS} ${LDFLAGS} -o $@
+
+${OBJS_DIR}:
+	mkdir ${OBJS_DIR}

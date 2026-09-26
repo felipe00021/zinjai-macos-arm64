@@ -1,0 +1,553 @@
+#include <wx/textctrl.h>
+#include <wx/stattext.h>
+#include <wx/colordlg.h>
+#include <wx/richtext/richtextctrl.h>
+#include <wx/combobox.h>
+#include <wx/dir.h>
+#include <wx/textfile.h>
+#include <wx/bitmap.h>
+#include "mxColoursEditor.h"
+#include "mxMainWindow.h"
+#include "mxBitmapButton.h"
+#include "Language.h"
+#include "ids.h"
+#include "mxSizers.h"
+#include "ConfigManager.h"
+#include "mxSource.h"
+#include "mxWelcomePanel.h"
+
+color_theme *g_ctheme = nullptr;
+
+BEGIN_EVENT_TABLE(mxColoursEditor,wxDialog)
+	EVT_BUTTON(wxID_SAVE,mxColoursEditor::OnSave)
+	EVT_BUTTON(wxID_OPEN,mxColoursEditor::OnOpen)
+	EVT_BUTTON(wxID_OK,mxColoursEditor::OnButtonOk)
+	EVT_BUTTON(wxID_FIND,mxColoursEditor::OnButtonApply)
+	EVT_BUTTON(wxID_CANCEL,mxColoursEditor::OnButtonCancel)
+	EVT_BUTTON(mxID_COLORS_PICKER,mxColoursEditor::OnButtonPicker)
+	EVT_CHECKBOX(wxID_ANY,mxColoursEditor::OnCheck)
+	EVT_TEXT(wxID_ANY,mxColoursEditor::OnText)
+	EVT_CLOSE(mxColoursEditor::OnClose)
+	EVT_COMBOBOX(wxID_ANY,mxColoursEditor::OnCombo)
+END_EVENT_TABLE()
+
+
+mxColoursEditor::mxColoursEditor(wxWindow *aparent)
+	: wxDialog(main_window,wxID_ANY,LANG(COLORS_CAPTION,"Definir Colores"),wxDefaultPosition,
+			   wxDefaultSize,wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER) 
+{
+	old_theme=custom_theme=*g_ctheme;
+	parent=aparent; setting=true;
+	
+	wxBoxSizer *mySizer = new wxBoxSizer(wxVERTICAL);
+	wxBoxSizer *bottomSizer = new wxBoxSizer(wxHORIZONTAL);
+	
+	wxButton *cancel_button = new mxBitmapButton (this, wxID_CANCEL, bitmaps->buttons.cancel, LANG(GENERAL_CANCEL_BUTTON,"&Cancelar")); 
+	wxButton *ok_button = new mxBitmapButton (this, wxID_OK, bitmaps->buttons.ok, LANG(GENERAL_OK_BUTTON,"&Aceptar"));
+	wxButton *apply_button = new mxBitmapButton (this, wxID_FIND, bitmaps->buttons.next, LANG(GENERAL_APPLY_BUTTON,"A&plicar"));
+	ok_button->SetMinSize(wxSize(ok_button->GetSize().GetWidth()<80?80:ok_button->GetSize().GetWidth(),ok_button->GetSize().GetHeight()));
+	apply_button->SetDefault(); 
+
+	inverted = new wxCheckBox(this,wxID_ANY,LANG(COLOURS_INVERTED,"Es un esquema de colores invertidos (texto claro sobre fondo oscuro)"));
+	inverted->SetValue(g_ctheme->inverted);
+	
+	wxArrayString color_profiles;
+	mxUT::GetFilesFromBothDirs(color_profiles,"colours",true,"<personalizado>");
+	bottomSizer->Add(new wxStaticText(this,wxID_ANY,LANG(COLOURS_ESCHEME,"Esquema:")),sizers->BA5_Center);
+	combo=new wxComboBox(this,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,color_profiles,wxCB_READONLY);
+	bottomSizer->Add(combo,sizers->BA5_Center);
+	
+	
+	int sel=color_profiles.Index(config->Init.colour_theme);
+	if (sel==wxNOT_FOUND) sel=color_profiles.GetCount()-1;
+	combo->SetSelection(sel);
+	
+	wxBitmapButton *open_button = new wxBitmapButton(this,wxID_OPEN,bitmaps->GetBitmap(DIR_PLUS_FILE("16","open.png")));
+	wxBitmapButton *save_button=new wxBitmapButton(this,wxID_SAVE,bitmaps->GetBitmap(DIR_PLUS_FILE("16","save.png")));
+	open_button->SetToolTip(LANG(COLOURS_TIP_OPEN,"Cargar un esquema de colores personalizado desde un archivo .zcs"));
+	save_button->SetToolTip(LANG(COLOURS_TIP_SAVE,"Guardar un esquema de colores personalizado en un archivo .zcs"));
+	bottomSizer->Add(open_button,sizers->BA5_Center);
+	bottomSizer->Add(save_button,sizers->BA5_Center);
+	bottomSizer->AddStretchSpacer();
+	bottomSizer->Add(cancel_button,sizers->BA5);
+	bottomSizer->Add(apply_button,sizers->BA5);
+	bottomSizer->Add(ok_button,sizers->BA5);
+	
+	scroll = new wxScrolledWindow(this,wxID_ANY);
+	sizer = new wxFlexGridSizer(6);
+	sizer->SetFlexibleDirection(wxBOTH);
+	sizer->Add(new wxStaticText(scroll,wxID_ANY,""));
+	sizer->Add(new wxStaticText(scroll,wxID_ANY,LANG(COLOURS_FRONT,"Color de Frente")),sizers->BA5_Center);
+	sizer->Add(new wxStaticText(scroll,wxID_ANY,LANG(COLOURS_BACK,"Color de Fondo")),sizers->BA5_Center);
+	sizer->Add(new wxStaticText(scroll,wxID_ANY,LANG(COLOURS_ITALIC,"Cursiva")),sizers->BA5_Center);
+	sizer->Add(new wxStaticText(scroll,wxID_ANY,LANG(COLOURS_BOLD,"Negrita")),sizers->BA5_Center);
+	sizer->Add(new wxStaticText(scroll,wxID_ANY,LANG(COLOURS_ZOOM,"Zoom")),sizers->BA5_Center);
+	scroll->SetScrollRate(10,10);
+	scroll->SetSizer(sizer);
+	sizer->AddGrowableCol(0);
+	
+	LoadList();
+	
+	wxStaticText *helpt=new wxStaticText(this,wxID_ANY,LANG(COLORS_HELP,""
+		"Puede ingresar los colores con formato HTML o utilizando el boton de "
+		"los tres punto para inciar un selector grafico. El formato html es \"#ABCDEF\" "
+		"donde AB, CD y EF son los valores en notación hexadecimal para R, G y B."));
+	helpt->SetMinSize(wxSize(10,-1));
+	mySizer->Add(helpt,sizers->BA5_Exp0);
+	mySizer->Add(scroll,sizers->BA5_Exp1);
+	mySizer->Add(inverted,sizers->BA5_Center);
+	mySizer->Add(bottomSizer,sizers->BA5_Exp0);
+	
+	mySizer->SetMinSize(wxSize(600,500)); 
+	SetSizerAndFit(mySizer);
+	
+	setting=false;
+	Show();
+}
+
+void mxColoursEditor::Add(wxString name, wxColour *fore, wxColour *back, bool *italic, bool *bold, int *zoom) {
+	
+	lvalfor[lcount]=fore;
+	lvalbak[lcount]=back;
+	lvalita[lcount]=italic;
+	lvalbol[lcount]=bold;
+	lvalzoom[lcount]=zoom;
+
+	sizer->Add(llabel[lcount] = new mxStaticText(scroll,name),sizers->BA5_Exp0);
+	llabel[lcount]->SetToolTip(name);
+	
+	ltfore[lcount]=ltback[lcount]=nullptr;
+	
+	if (fore) {
+		wxBoxSizer *btsizer = new wxBoxSizer(wxHORIZONTAL);
+		ltfore[lcount]=new wxTextCtrl(scroll,wxID_ANY,"");
+		btsizer->Add(ltfore[lcount],sizers->BA5);
+		ltfore[lcount]->SetValue(fore->GetAsString(wxC2S_HTML_SYNTAX));
+		lbfore[lcount] = new wxButton(scroll,mxID_COLORS_PICKER,"...",wxDefaultPosition,wxSize(30,10));
+		btsizer->Add(lbfore[lcount],sizers->BA5_Exp0);
+		sizer->Add(btsizer,sizers->Exp0);
+	} else {
+		sizer->Add(new wxStaticText(scroll,wxID_ANY,""));
+	}
+	
+	if (back) {
+		wxBoxSizer *btsizer2 = new wxBoxSizer(wxHORIZONTAL);
+		ltback[lcount]=new wxTextCtrl(scroll,wxID_ANY,"");
+		btsizer2->Add(ltback[lcount],sizers->BA5);
+		ltback[lcount]->SetValue(back->GetAsString(wxC2S_HTML_SYNTAX));
+		lbback[lcount] = new wxButton(scroll,mxID_COLORS_PICKER,"...",wxDefaultPosition,wxSize(30,10));
+		btsizer2->Add(lbback[lcount],sizers->BA5_Exp0);
+		sizer->Add(btsizer2,sizers->Exp0);
+	} else {
+		sizer->Add(new wxStaticText(scroll,wxID_ANY,""));
+	}
+	
+	if (bold) {
+		lcur[lcount] = new wxCheckBox(scroll,wxID_ANY,"  ");
+		lcur[lcount]->SetValue(*italic);
+		lbold[lcount] = new wxCheckBox(scroll,wxID_ANY,"  ");
+		lbold[lcount]->SetValue(*bold);
+		sizer->Add(lcur[lcount],sizers->BA5);
+		sizer->Add(lbold[lcount],sizers->BA5);
+	} else {
+		sizer->Add(new wxStaticText(scroll,wxID_ANY,""));
+		sizer->Add(new wxStaticText(scroll,wxID_ANY,""));
+	}
+	
+	if (zoom) {
+		ltzoom[lcount]=new wxTextCtrl(scroll,wxID_ANY,wxString()<<*zoom);
+		sizer->Add(ltzoom[lcount],sizers->BA5_Right);
+	} else {
+		sizer->Add(new wxStaticText(scroll,wxID_ANY,""));
+	}
+	
+	llabel[lcount]->SetData(
+		fore ? fore : &(g_ctheme->DEFAULT_FORE),
+		back ? back : &(g_ctheme->DEFAULT_BACK),
+		italic,bold,
+		zoom ? zoom: &(g_ctheme->DEFAULT_ZOOM));
+	
+	lcount++;
+}
+
+
+#define MXCAdd(id,text) Add(text,&(g_ctheme->id##_FORE),&(g_ctheme->id##_BACK),&(g_ctheme->id##_ITALIC),&(g_ctheme->id##_BOLD),&(g_ctheme->id##_ZOOM));
+#define MXCAdd0(id,text) Add(text,&(g_ctheme->id##_FORE),&(g_ctheme->id##_BACK),nullptr,nullptr,nullptr);
+#define MXCAdd1(id,text) Add(text,&(g_ctheme->id),nullptr,nullptr,nullptr,nullptr);
+#define MXCAdd2(id,text) Add(text,nullptr,&(g_ctheme->id),nullptr,nullptr,nullptr);
+
+void mxColoursEditor::LoadList ( ) {
+	lcount=0;
+	MXCAdd(DEFAULT,LANG(COLORS_ID_DEFAULT,"Texto por defecto"));
+	MXCAdd(IDENTIFIER,LANG(COLORS_ID_IDENTIFIER,"Identificadores"));
+	MXCAdd(GLOBALCLASS,LANG(COLORS_ID_USER_KEYWORD,"Identificador resaltado"));	
+	MXCAdd(NUMBER,LANG(COLORS_ID_NUMBER,"Numero"));
+	MXCAdd(WORD,LANG(COLORS_ID_WORD,"Palabra clave"));
+	MXCAdd(WORD2,LANG(COLORS_ID_WORD2,"Tipo de dato funtamental"));
+	MXCAdd(STRING,LANG(COLORS_ID_STRING,"Cadena de caracteres"));
+	MXCAdd(STRINGEOL,LANG(COLORS_ID_STRINGEOL,"Cadena sin finalizar"));
+	MXCAdd(CHARACTER,LANG(COLORS_ID_CHARACTER,"Caracter"));
+	MXCAdd(OPERATOR,LANG(COLORS_ID_OPERATOR,"Operador"));
+	MXCAdd(BRACELIGHT,LANG(COLORS_ID_BRACELIGHT,"Llave/parentesis/corchete resaltado"));
+	MXCAdd(BRACEBAD,LANG(COLORS_ID_BRACEBAD,"Llave/parentesis/corchete incorrecto"));
+	MXCAdd(PREPROCESSOR,LANG(COLORS_ID_PREPROCESSOR,"Directiva de preprocesador"));
+	MXCAdd(COMMENT,LANG(COLORS_ID_COMMENT,"Comentario /* */"));
+	MXCAdd(COMMENTLINE,LANG(COLORS_ID_COMMENTLINE,"Comentario //"));
+	MXCAdd(COMMENTDOC,LANG(COLORS_ID_COMMENTDOC,"Comentario Doxygen /** **/"));
+	MXCAdd(COMMENTLINEDOC,LANG(COLORS_ID_COMMENTLINEDOC,"Comentario Doxygen ///"));
+	MXCAdd(COMMENTDOCKEYWORD,LANG(COLORS_ID_COMMENTDOCKEYWORD,"Palabra clave Doxygen"));
+	MXCAdd(COMMENTDOCKEYWORDERROR,LANG(COLORS_ID_COMMENTDOCKEYWORDERROR,"Palabra clave Doxygen incorrecta"));
+	
+	MXCAdd0(CALLTIP,LANG(COLORS_ID_CALLTIP,"Ayuda emergente"));
+	MXCAdd0(LINENUMBER,LANG(COLORS_ID_LINENUMBER,"Numero de linea"));
+	MXCAdd0(FOLD,LANG(COLORS_ID_FOLD,"Indicadores de plegado"));
+	MXCAdd0(FOLD_TRAMA,LANG(COLORS_ID_FOLD_TRAMA,"Margen para indicadores de plegado"));
+	MXCAdd1(INDENTGUIDE,LANG(COLORS_ID_INDENTGUIDE,"Guia de indentado"));
+	
+	MXCAdd2(SELBACKGROUND,LANG(COLORS_ID_SELBACKGROUND,"Seleccion"));
+	MXCAdd2(CURRENT_LINE,LANG(COLORS_ID_CURRENT_LINE,"Linea actual"));
+	MXCAdd2(USER_LINE,LANG(COLORS_ID_USER_LINE,"Linea resaltada"));	
+	MXCAdd1(CARET,LANG(COLORS_ID_CARET,"Cursor de texto"));
+}
+
+
+void mxColoursEditor::OnClose (wxCloseEvent & evt) {
+	Destroy();
+	if (parent!=main_window) parent->Show();
+}
+
+void mxColoursEditor::OnButtonOk (wxCommandEvent & evt) {
+	if (combo->GetSelection()==int(combo->GetCount())-1) {
+		g_ctheme->Save(DIR_PLUS_FILE(config->config_dir,"colours.zcs"));
+		config->Init.colour_theme="";
+	} else {
+		config->Init.colour_theme=combo->GetString(combo->GetSelection());
+	}
+	main_window->UpdateStylesInSources();
+	Close();
+}
+
+void mxColoursEditor::OnButtonCancel (wxCommandEvent & evt) {
+	(*g_ctheme)=old_theme;
+	main_window->UpdateStylesInSources();
+	Close();
+}
+
+void mxColoursEditor::OnButtonPicker (wxCommandEvent & evt) {
+	wxObject *b=evt.GetEventObject();
+	for (int i=0;i<lcount;i++) {
+		if (lbfore[i]==b) {
+			wxColour c=wxGetColourFromUser(this,wxColour(ltfore[i]->GetValue()),llabel[i]->GetLabel());
+			if (c.IsOk()) ltfore[i]->SetValue(c.GetAsString(wxC2S_HTML_SYNTAX));
+		}
+		if (lbback[i]==b) {
+			wxColour c=wxGetColourFromUser(this,wxColour(ltback[i]->GetValue()),llabel[i]->GetLabel());
+			if (c.IsOk()) ltback[i]->SetValue(c.GetAsString(wxC2S_HTML_SYNTAX));
+		}
+	}
+}
+
+void mxColoursEditor::OnButtonApply (wxCommandEvent & evt) {
+	main_window->UpdateStylesInSources();
+	if (g_welcome_panel) g_welcome_panel->Reload();
+}
+
+
+color_theme::color_theme (bool inverted) {
+	SetDefaults(inverted);
+}
+
+color_theme::color_theme (wxString file) {
+	if (file.Len()) Load(file); else SetDefaults();
+}
+
+#define ctSet0(id,f,b) id##_FORE=f; id##_BACK=b;
+#define ctSet(id,f,b) id##_FORE=f; id##_BACK=b; id##_BOLD=false; id##_ITALIC=false; id##_ZOOM=100;
+#define ctSetI(id,f,b) id##_FORE=f; id##_BACK=b; id##_BOLD=false; id##_ITALIC=true; id##_ZOOM=100;
+#define ctSetB(id,f,b) id##_FORE=f; id##_BACK=b; id##_BOLD=true; id##_ITALIC=false; id##_ZOOM=100;
+
+void color_theme::SetDefaults (bool inverted) {
+	this->inverted = inverted;
+	if (inverted) {
+		
+		ctSet(DEFAULT,"WHITE","BLACK"); // default
+		ctSetI(COMMENT,"Z DARK GRAY","BLACK"); // comment
+		ctSetI(COMMENTLINE,"Z DARK GRAY","BLACK"); // comment line
+		ctSetI(COMMENTDOC,"Z ALMOST BLUE","BLACK"); // comment doc
+		ctSetI(COMMENTLINEDOC,"Z ALMOST BLUE","BLACK"); // special comment 
+		ctSet(COMMENTDOCKEYWORD,"Z CORNFLOWER BLUE","BLACK"); // doxy keywords
+		ctSet(COMMENTDOCKEYWORDERROR,"RED","BLACK"); // keywords errors
+		ctSet(NUMBER,"YELLOW GREEN","BLACK"); // number
+		ctSetB(WORD,"Z CORNFLOWER BLUE","BLACK"); // keywords
+		ctSet(STRING,"Z ALMOST RED","BLACK"); // string
+		ctSet(CHARACTER,"MAGENTA","BLACK"); // character
+		ctSet(PREPROCESSOR,"Z ALMOST GREEN","BLACK"); // preprocessor
+		ctSetB(OPERATOR,"WHITE","BLACK"); // operator 
+		ctSet(IDENTIFIER,"WHITE","BLACK"); // identifier 
+		ctSet(STRINGEOL,"RED","Z REALLY DARKER GRAY"); // string eol
+		ctSet(WORD2,"Z CORNFLOWER BLUE","BLACK"); // extra words
+		
+		ctSetB(BRACELIGHT,"RED","Z REALLY DARK BLUE"); 
+		ctSetB(BRACEBAD,"Z DARK RED","BLACK"); 
+		
+		ctSet0(CALLTIP,"Z LIGHT YELLOW","Z REALLY DARKER GRAY");
+		ctSet0(FOLD,"WHITE","BLACK");
+		ctSet0(FOLD_TRAMA,"DARK SLATE GREY","BLACK");
+		ctSet0(LINENUMBER,"LIGHT GRAY","BLACK");
+		INDENTGUIDE="Z DARK GRAY";
+		
+		SELBACKGROUND="Z REALLY DARKER GRAY";
+		CURRENT_LINE=wxColour(0x80,0x80,0xFF);
+		USER_LINE="Z REALLY DARK RED";
+		ctSet(GLOBALCLASS,"WHITE","Z DARK GREEN"); // string eol
+		CARET="WHITE";
+		
+	} else {
+		
+		ctSet(DEFAULT,"BLACK","WHITE"); // default
+		ctSetI(COMMENT,"Z DARK GRAY","WHITE"); // comment
+		ctSetI(COMMENTLINE,"Z DARK GRAY","WHITE"); // comment line
+		ctSetI(COMMENTDOC,"Z DOXY BLUE","WHITE"); // comment doc
+		ctSet(NUMBER,"SIENNA","WHITE"); // number
+		ctSetB(WORD,"Z DARK BLUE","WHITE"); // keywords
+		ctSet(STRING,"RED","WHITE"); // string
+		ctSet(CHARACTER,"MAGENTA","WHITE"); // character
+		ctSet(PREPROCESSOR,"FOREST GREEN","WHITE"); // preprocessor
+		ctSetB(OPERATOR,"BLACK","WHITE"); // operator 
+		ctSet(IDENTIFIER,"BLACK","WHITE"); // identifier 
+		ctSet(STRINGEOL,"RED","LIGHT GRAY"); // string eol
+		ctSetI(COMMENTLINEDOC,"Z DOXY BLUE","WHITE"); // special comment 
+		ctSet(WORD2,"Z DARK BLUE","WHITE"); // extra words
+		ctSet(COMMENTDOCKEYWORD,"Z CORNFLOWER BLUE","WHITE"); // doxy keywords
+		ctSet(COMMENTDOCKEYWORDERROR,"RED","WHITE"); // doxy keywords errors
+		
+		ctSetB(BRACELIGHT,"RED","Z LIGHT BLUE"); 
+		ctSetB(BRACEBAD,"Z DARK RED","WHITE"); 
+		
+		ctSet0(CALLTIP,"Z DARKER GRAY","Z LIGHT YELLOW");
+		ctSet0(FOLD,"BLACK","WHITE");
+		ctSet0(FOLD_TRAMA,"LIGHT GRAY","WHITE");
+		ctSet0(LINENUMBER,"Z DARK GRAY","WHITE");
+		INDENTGUIDE="Z DARK GRAY";
+		
+		SELBACKGROUND="Z LIGHT GRAY";
+		CURRENT_LINE="BLUE";
+		USER_LINE="Z LIGHT RED";
+		ctSet(GLOBALCLASS,"BLACK","Z LIGHT GREEN"); // identifier 
+		CARET="BLACK";
+	}
+}
+
+
+#define CTWrite(what)\
+	if (ref.what##_FORE!=what##_FORE) fil.AddLine(wxString(#what"_FORE=")<<what##_FORE.GetAsString(wxC2S_HTML_SYNTAX)); \
+	if (ref.what##_BACK!=what##_BACK) fil.AddLine(wxString(#what"_BACK=")<<what##_BACK.GetAsString(wxC2S_HTML_SYNTAX)); \
+	if (ref.what##_BOLD!=what##_BOLD) fil.AddLine(wxString(#what"_BOLD=")<<(what##_BOLD?"1":"0")); \
+	if (ref.what##_ITALIC!=what##_ITALIC) fil.AddLine(wxString(#what"_ITALIC=")<<(what##_ITALIC?"1":"0"));
+#define CTWrite0(what)\
+	if (ref.what##_FORE!=what##_FORE) fil.AddLine(wxString(#what"_FORE=")<<what##_FORE.GetAsString(wxC2S_HTML_SYNTAX)); \
+	if (ref.what##_BACK!=what##_BACK) fil.AddLine(wxString(#what"_BACK=")<<what##_BACK.GetAsString(wxC2S_HTML_SYNTAX));
+#define CTWrite1(what) \
+	if (ref.what!=what) fil.AddLine(wxString(#what"=")<<what.GetAsString(wxC2S_HTML_SYNTAX)); 
+
+bool color_theme::Save (const wxString &full_path) {
+	// open
+	wxTextFile fil(full_path);
+	if (fil.Exists()) fil.Open();
+	else fil.Create();
+	fil.Clear();
+	// write
+	color_theme ref(inverted);
+	fil.AddLine(wxString("inverted=")<<(inverted?1:0));
+	CTForAll(CTWrite);
+	// close
+	fil.Write();
+	fil.Close();
+	return true;
+}
+
+#define CTLoad(name)\
+	else if (key==#name"_FORE") name##_FORE=wxColour(value);\
+	else if (key==#name"_BACK") name##_BACK=wxColour(value);\
+	else if (key==#name"_BOLD") name##_BOLD=mxUT::IsTrue(value);\
+	else if (key==#name"_ITALIC") name##_ITALIC=mxUT::IsTrue(value)
+#define CTLoad0(name)\
+	else if (key==#name"_FORE") name##_FORE=wxColour(value);\
+	else if (key==#name"_BACK") name##_BACK=wxColour(value)
+#define CTLoad1(name)\
+	else if (key==#name) name=wxColour(value)
+
+
+
+bool color_theme::Load (const wxString &full_path) {
+	SetDefaults(false);
+	wxTextFile fil(full_path);
+	if (!fil.Exists()) return false;
+	fil.Open();
+	wxString key, value;
+	for ( wxString str = fil.GetFirstLine(); !fil.Eof(); str = fil.GetNextLine() ) {
+		key=str.BeforeFirst('=');
+		value=str.AfterFirst('=');
+		if (str[0]=='#') continue;
+		else if (str=="inverted=0") { inverted=false; /*SetDefaults(false); */continue; }
+		else if (str=="inverted=1") { inverted=true; SetDefaults(true); continue; }
+		CTForAll(CTLoad);
+	}
+	fil.Close();
+	return true;
+}
+
+
+BEGIN_EVENT_TABLE(mxStaticText,wxPanel)
+	EVT_PAINT(mxStaticText::OnPaint)
+END_EVENT_TABLE()
+
+mxStaticText::mxStaticText (wxWindow *parent, wxString text):wxPanel(parent,wxID_ANY) {
+	this->text=text; fore=nullptr;
+}
+
+void mxStaticText::OnPaint(wxPaintEvent &evt) {
+	if (!fore) return;
+	wxPaintDC dc(this);
+	PrepareDC(dc);
+	dc.SetBackground(*back);
+	wxFont f((config->Styles.font_size*(*zoom))/100, wxMODERN, wxNORMAL, wxNORMAL,false,config->Styles.font_name);
+	f.SetWeight((bold&&*bold)?wxFONTWEIGHT_BOLD:wxFONTWEIGHT_NORMAL);
+	f.SetStyle((italic&&*italic)?wxFONTFLAG_ITALIC:wxFONTFLAG_DEFAULT);
+	dc.Clear(); dc.SetFont(f);
+//	dc.SetTextBackground(*back);
+	dc.SetTextForeground(*fore);
+	int w,h;
+	GetClientSize(&w,&h);
+	dc.DrawLabel(text,wxRect(10,0,w-10,h),wxALIGN_LEFT);
+}
+
+void mxStaticText::SetData (wxColour * fore, wxColour * back, bool * italic, bool * bold, int *zoom) {
+	this->bold=bold;
+	this->italic=italic;
+	this->fore=fore;
+	this->back=back;
+	this->zoom=zoom;
+}
+
+void color_theme::Initialize() {
+	
+	wxTheColourDatabase->AddColour("Z LIGHT GREEN",wxColour(120,255,120));
+	wxTheColourDatabase->AddColour("Z GREEN",wxColour(0,200,0));
+	wxTheColourDatabase->AddColour("Z DARK GREEN",wxColour(0,80,0));
+	wxTheColourDatabase->AddColour("Z LIGHT BLUE",wxColour(235,235,255));
+	wxTheColourDatabase->AddColour("Z DOXY BLUE",wxColour(80,80,255));
+	wxTheColourDatabase->AddColour("Z ALMOST BLUE",wxColour(100,100,230));
+	wxTheColourDatabase->AddColour("Z LIGHT RED",wxColour(255,220,220));
+	wxTheColourDatabase->AddColour("Z LIGHT YELLOW",wxColour(250,250,215));
+	wxTheColourDatabase->AddColour("Z REALLY DARK BLUE",wxColour(0,0,50));
+	wxTheColourDatabase->AddColour("Z REALLY DARK RED",wxColour(50,0,0));
+	wxTheColourDatabase->AddColour("Z ALMOST RED",wxColour(230,100,100));
+	wxTheColourDatabase->AddColour("Z ALMOST GREEN",wxColour(100,230,100));
+	wxTheColourDatabase->AddColour("Z DARK BLUE",wxColour(0,0,128));
+	wxTheColourDatabase->AddColour("Z DARK RED",wxColour(128,0,0));
+	wxTheColourDatabase->AddColour("Z LIGHT GRAY",wxColour(200,200,200));
+	wxTheColourDatabase->AddColour("Z DARK GRAY",wxColour(150,150,150));
+	wxTheColourDatabase->AddColour("Z DARKER GRAY",wxColour(100,100,100)); // para el texto del tooltip
+	wxTheColourDatabase->AddColour("Z REALLY DARKER GRAY",wxColour(66,66,66)); // para el texto del tooltip
+	wxTheColourDatabase->AddColour("Z DIFF GREEN",wxColour(128,255,128));
+	wxTheColourDatabase->AddColour("Z DIFF YELLOW",wxColour(255,255,128));
+	wxTheColourDatabase->AddColour("Z DARK YELLOW",wxColour(128,128,0));
+	wxTheColourDatabase->AddColour("Z CORNFLOWER BLUE",wxColour(100,150,240));
+	
+	g_ctheme = new color_theme;
+#if 0
+	// para generar los perfiles de color y que concuerden con los valores por defecto
+	g_ctheme->SetDefaults(true);
+	g_ctheme->Save(DIR_PLUS_FILE(("colours"),"inverted.zcs"));
+	g_ctheme->SetDefaults();
+	g_ctheme->Save(DIR_PLUS_FILE(("colours"),"default.zcs"));
+#else
+	g_ctheme->SetDefaults();
+#endif
+}
+
+void mxColoursEditor::OnCheck (wxCommandEvent & evt) {
+	evt.Skip();
+	wxObject *w=evt.GetEventObject();
+	for (int i=0;i<lcount;i++)
+		if (w==lbold[i]) (*lvalbol[i])=lbold[i]->GetValue();
+		else if (w==lcur[i]) (*lvalita[i])=lcur[i]->GetValue();
+	if (!setting) {
+		combo->SetSelection(combo->GetCount()-1); 
+		custom_theme=*g_ctheme;
+		g_ctheme->inverted=inverted->GetValue();
+	}
+	scroll->Refresh();
+}
+
+void mxColoursEditor::OnText (wxCommandEvent & evt) {
+	if (evt.GetEventObject()==combo) return;
+	wxObject *w=evt.GetEventObject();
+	for (int i=0;i<lcount;i++)
+		if (w==ltfore[i]) (*lvalfor[i])=wxColour(ltfore[i]->GetValue());
+		else if (w==ltback[i]) (*lvalbak[i])=wxColour(ltback[i]->GetValue());
+		else if (w==ltzoom[i]) {
+			long l=100; ltzoom[i]->GetValue().ToLong(&l);
+			(*lvalzoom[i])= l>=10 && l<=1000 ? l : 100;
+		}
+	if (!setting) { 
+		combo->SetSelection(combo->GetCount()-1); 
+		custom_theme=*g_ctheme;
+	}
+	scroll->Refresh();
+}
+
+void mxColoursEditor::OnCombo (wxCommandEvent & evt) {
+	if (combo->GetSelection()==int(combo->GetCount())-1) {
+		(*g_ctheme)=custom_theme;
+	} else {
+		wxString filename = combo->GetString(combo->GetSelection());
+		wxString fullpath = mxUT::WichOne(filename,"colours",true);
+		g_ctheme->Load(fullpath);
+	}
+	SetValues();
+}
+
+void mxColoursEditor::SetValues() {
+	setting=true;
+	inverted->SetValue(g_ctheme->inverted);
+	for (int i=0;i<lcount;i++) {
+		if (lvalfor[i]) ltfore[i]->SetValue(lvalfor[i]->GetAsString(wxC2S_HTML_SYNTAX));
+		if (lvalbak[i]) ltback[i]->SetValue(lvalbak[i]->GetAsString(wxC2S_HTML_SYNTAX));
+		if (lvalbol[i]) lbold[i]->SetValue(*(lvalbol[i]));
+		if (lvalita[i]) lcur[i]->SetValue(*(lvalita[i]));
+	}
+	wxYield();
+	setting=false;
+}
+
+void mxColoursEditor::OnOpen (wxCommandEvent & evt) {
+	wxFileDialog dlg (this, LANG(GENERAL_OPEN,"Abrir"),config->Files.last_dir,"", "Zinjai Colour Schemes (*.zcs)|*.zcs;*.ZCS|All files(*)|*", wxFD_OPEN);
+	if (dlg.ShowModal() == wxID_OK) {
+		config->Files.last_dir=wxFileName(dlg.GetPath()).GetPath();
+		g_ctheme->Load(dlg.GetPath());
+		combo->SetSelection(combo->GetCount()-1); 
+		custom_theme=*g_ctheme;
+		SetValues();
+	}
+}
+
+void mxColoursEditor::OnSave (wxCommandEvent & evt) {
+	wxString fname=wxGetTextFromUser(LANG(COLOURS_ESCHEME,"Esquema:"),LANG(GENERAL_SAVE,"Guardar"),"custom_color_scheme", this);
+	if (fname.Len()) {
+		if (!fname.Upper().EndsWith(".ZCS")) fname<<".zcs";
+		wxString folder = DIR_PLUS_FILE(config->config_dir,"colours"); 
+		if (!wxFileName::DirExists(folder)) wxFileName::Mkdir(folder);
+		g_ctheme->Save(DIR_PLUS_FILE(folder,fname));
+#ifdef __WIN32__
+		bool os_case=false;
+#else
+		bool os_case=true;
+#endif
+		int idx=combo->FindString(fname,os_case);
+		if (idx==wxNOT_FOUND) combo->Insert(fname,idx=0);
+		combo->Select(idx);
+	}
+}
+

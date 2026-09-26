@@ -1,0 +1,19 @@
+GPP=powerpc-apple-darwin8-g++
+CXXFLAGS=-O2 `/opt/mac/wx/bin/wx-config --cppflags`
+LDFLAGS=-lwx_mac_stc-2.8-powerpc-apple-darwin8 `/opt/mac/wx/bin/wx-config --libs --host=powerpc-apple-darwin8`
+OBJS_DIR=../../../../../temp/img_viewer/release.ppc
+
+all: ../../bin/img_viewer.bin
+
+include Makefile.common
+
+clean:
+	rm -rf ${OBJS} ../../bin/img_viewer.bin
+	rm -f core
+
+../../bin/img_viewer.bin: ${OBJS_DIR} ${OBJS}
+	${GPP} ${OBJS} ${LDFLAGS} -o $@
+
+
+${OBJS_DIR}:
+	mkdir -p ${OBJS_DIR}
