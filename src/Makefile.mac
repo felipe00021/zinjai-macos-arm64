@@ -11,7 +11,7 @@ include Makefile.common
 clean:
 	rm -rf ${OBJS} ../zinjai
 
-../zinjai: ${OBJS}
+../zinjai: ${OBJS_DIR} ${OBJS} 
 	${GPP} ${OBJS} ${LIBS} -o $@
 
 ${OBJS_DIR}:
